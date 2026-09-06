@@ -192,10 +192,20 @@ function App() {
 
 function LoadingScreen() { return <div className="loading-screen"><Logo /><span className="boot-line"></span><p>Menyiapkan ruang kerja guru…</p></div>; }
 
+function authErrorMessage(error) {
+  const message = String(error?.message || "");
+  if (/email not confirmed/i.test(message)) return "Email belum diaktifkan. Klik tautan aktivasi di inbox atau kirim ulang email konfirmasi.";
+  if (/invalid login credentials/i.test(message)) return "Email atau kata sandi tidak cocok. Periksa kembali data masukmu.";
+  if (/user already registered/i.test(message)) return "Email ini sudah terdaftar. Silakan masuk atau kirim ulang email aktivasi.";
+  if (/password should be at least/i.test(message)) return "Kata sandi minimal 6 karakter.";
+  return message || "Terjadi kesalahan. Coba lagi.";
+}
+
 function AuthScreen({ onAuth, configurationPending = false }) {
   const [mode, setMode] = useState("login");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [pendingEmail, setPendingEmail] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", password: "", school: "", role: "wali_kelas" });
 
@@ -218,14 +228,39 @@ function AuthScreen({ onAuth, configurationPending = false }) {
         const { data, error } = await supabase.auth.signUp({
           email: form.email,
           password: form.password,
-          options: { data: { full_name: form.name, school_name: form.school, role: form.role } },
+          options: {
+            emailRedirectTo: window.location.origin,
+            data: { full_name: form.name, school_name: form.school, role: form.role },
+          },
         });
         if (error) throw error;
         if (data.session) onAuth({ mode: "supabase", user: data.user, accessToken: data.session.access_token });
-        else setNotice({ type: "success", message: "Akun berhasil dibuat. Periksa email untuk mengaktifkan akun, lalu masuk." });
+        else {
+          setPendingEmail(form.email);
+          setMode("login");
+          setForm((current) => ({ ...current, password: "" }));
+          setNotice({ type: "verify", message: "Akun berhasil dibuat. Klik tautan aktivasi yang kami kirim ke emailmu, lalu masuk." });
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
       }
     } catch (error) {
-      setNotice({ type: "error", message: error.message || "Terjadi kesalahan. Coba lagi." });
+      setNotice({ type: "error", message: authErrorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resendConfirmation = async () => {
+    const email = pendingEmail || form.email;
+    if (!email) return setNotice({ type: "error", message: "Masukkan email yang sudah didaftarkan terlebih dahulu." });
+    setBusy(true);
+    try {
+      const { error } = await supabase.auth.resend({ type: "signup", email, options: { emailRedirectTo: window.location.origin } });
+      if (error) throw error;
+      setPendingEmail(email);
+      setNotice({ type: "verify", message: "Email aktivasi sudah dikirim ulang. Periksa inbox serta folder spam." });
+    } catch (error) {
+      setNotice({ type: "error", message: authErrorMessage(error) });
     } finally {
       setBusy(false);
     }
@@ -236,14 +271,14 @@ function AuthScreen({ onAuth, configurationPending = false }) {
       <div className="auth-ambient ambient-one"></div><div className="auth-ambient ambient-two"></div>
       <section className="auth-story">
         <Logo />
-        <div className="auth-story-copy"><p className="eyebrow"><span></span>RUANG KERJA KHUSUS GURU</p><h1>Catatan kelas rapi.<br/><span>Mengajar jadi lebih fokus.</span></h1><p>Siswa, presensi, jurnal, nilai, dan bantuan AI hadir dalam satu ruang kerja yang tenang dan mudah dipakai.</p></div>
         <div className="auth-preview-card"><div className="preview-top"><span className="preview-logo"><img src="/brand/bantu-beres-symbol.png" alt="" /></span><span>Hari ini</span></div><strong>Apa yang ingin dibereskan?</strong><div className="preview-command"><Sparkles size={16}/><span>Ringkas jurnal dan siapkan tindak lanjut…</span></div><div className="preview-metrics"><span><b>32</b>Siswa</span><span><b>94%</b>Hadir</span><span><b>6</b>Jurnal</span></div></div>
+        <div className="auth-story-copy"><p className="eyebrow"><span></span>RUANG KERJA KHUSUS GURU</p><h1>Catatan kelas rapi.<br/><span>Mengajar jadi lebih fokus.</span></h1><p>Siswa, presensi, jurnal, nilai, dan bantuan AI hadir dalam satu ruang kerja yang tenang dan mudah dipakai.</p></div>
         <div className="auth-trust"><span><ShieldCheck size={16}/> Data per akun</span><span><FileSpreadsheet size={16}/> Import Excel</span><span><Sparkles size={16}/> Asisten AI</span></div>
       </section>
       <section className="auth-panel"><div className="auth-mobile-brand"><Logo /></div><div className="auth-card">
         <div className="auth-heading"><p className="eyebrow">{mode === "login" ? "SELAMAT DATANG KEMBALI" : "MULAI RUANG KERJA"}</p><h1>{mode === "login" ? "Masuk ke Bantu Beres" : "Buat akun guru"}</h1><p>{mode === "login" ? "Lanjutkan pekerjaan kelasmu dari tempat terakhir." : "Siapkan ruang kerja pribadi untuk kelas dan mata pelajaranmu."}</p></div>
         {configurationPending && <div className="setup-notice"><ShieldCheck size={18}/><span><strong>Database khusus sedang menunggu slot</strong><small>Login akan aktif setelah project Supabase baru tersedia. Data tidak memakai database aplikasi lain.</small></span></div>}
-        {notice && <div className={"form-notice " + notice.type}>{notice.message}</div>}
+        {notice && <div className={"form-notice " + notice.type} role="status"><span>{notice.message}</span>{notice.type === "verify" && <button type="button" onClick={resendConfirmation} disabled={busy}>Kirim ulang email</button>}</div>}
         <div className="auth-tabs"><button className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setNotice(null); }}>Masuk</button><button className={mode === "register" ? "active" : ""} onClick={() => { setMode("register"); setNotice(null); }}>Daftar</button></div>
         <form onSubmit={submit} className="auth-form">
           {mode === "register" && <><Field label="Nama lengkap" value={form.name} onChange={(value) => update("name", value)} placeholder="Contoh: Rina Wulandari" /><Field label="Nama sekolah" value={form.school} onChange={(value) => update("school", value)} placeholder="Contoh: SMP Negeri 1" /><label className="field"><span>Peran utama</span><select value={form.role} onChange={(event) => update("role", event.target.value)}><option value="wali_kelas">Wali kelas</option><option value="guru_mapel">Guru mata pelajaran</option></select></label></>}
