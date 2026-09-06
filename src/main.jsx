@@ -271,22 +271,28 @@ async function fetchRemoteData(user) {
     supabase.from("classes").select("*").eq("school_id", school.id).order("name"),
     supabase.from("subjects").select("*").eq("school_id", school.id).order("name"),
     supabase.from("students").select("*").eq("school_id", school.id).order("full_name"),
+    supabase.from("enrollments").select("*").eq("school_id", school.id).eq("active", true),
     supabase.from("attendance_records").select("*").eq("school_id", school.id).order("attendance_date", { ascending: false }).limit(1000),
     supabase.from("teaching_journals").select("*").eq("school_id", school.id).order("journal_date", { ascending: false }).limit(300),
     supabase.from("assessments").select("*").eq("school_id", school.id).order("assessment_date", { ascending: false }).limit(300),
     supabase.from("assessment_scores").select("*").limit(2000),
   ]);
-  const [years, classes, subjects, students, attendance, journals, assessments, scores] = results.map((result) => result.data || []);
+  const [years, classes, subjects, students, enrollments, attendance, journals, assessments, scores] = results.map((result) => result.data || []);
   data.academicYears = years;
   data.classes = classes;
   data.subjects = subjects;
-  data.students = students;
+  const enrollmentByStudent = Object.fromEntries(enrollments.map((item) => [item.student_id, item]));
+  data.students = students.map((student) => {
+    const enrollment = enrollmentByStudent[student.id];
+    const classRow = classes.find((item) => item.id === enrollment?.class_id);
+    return { ...student, class_id: enrollment?.class_id || null, class_name: classRow?.name || "" };
+  });
   data.attendance = attendance;
   data.journals = journals;
   const assessmentMap = Object.fromEntries(assessments.map((item) => [item.id, item]));
   data.grades = scores.map((score) => {
     const assessment = assessmentMap[score.assessment_id] || {};
-    const student = students.find((item) => item.id === score.student_id);
+    const student = data.students.find((item) => item.id === score.student_id);
     const classRow = classes.find((item) => item.id === assessment.class_id);
     const subject = subjects.find((item) => item.id === assessment.subject_id);
     return { id: score.id, student_id: score.student_id, student_name: student?.full_name || "", student_nisn: student?.nisn || "", class_name: classRow?.name || "", subject_name: subject?.name || "", assessment_title: assessment.title || "", assessment_category: assessment.category || "", assessment_date: assessment.assessment_date || "", point: score.point, max_point: assessment.max_point || 100, comment: score.comment || "" };
@@ -376,12 +382,17 @@ function Workspace({ auth, onLogout }) {
     addStudent: async (draft) => {
       try {
         if (auth.mode === "local") {
-          const next = { ...data, students: [...data.students, { ...draft, id: id("student"), active: true }] };
-          if (draft.class_name && !next.classes.some((item) => item.name.toLowerCase() === draft.class_name.toLowerCase())) next.classes = [...next.classes, { id: id("class"), name: draft.class_name, active: true }];
+          const next = { ...data, students: [...data.students], classes: [...data.classes] };
+          let classRow = next.classes.find((item) => item.name.toLowerCase() === text(draft.class_name).toLowerCase());
+          if (draft.class_name && !classRow) { classRow = { id: id("class"), name: draft.class_name, active: true }; next.classes.push(classRow); }
+          next.students.push({ ...draft, id: id("student"), class_id: classRow?.id || null, active: true });
           commit(next);
         } else {
           const result = await supabase.from("students").insert({ school_id: data.school.id, full_name: draft.full_name, nis: draft.nis || null, nisn: draft.nisn || null, gender: draft.gender || null, address: draft.address || null, parent_phone: draft.parent_phone || null, active: true }).select().single();
           if (result.error) throw result.error;
+          const classRow = data.classes.find((item) => item.name.toLowerCase() === text(draft.class_name).toLowerCase());
+          const year = data.academicYears[0];
+          if (classRow && year && result.data) await supabase.from("enrollments").insert({ school_id: data.school.id, class_id: classRow.id, student_id: result.data.id, academic_year_id: year.id, active: true });
           await refresh();
         }
         notify("success", "Data siswa berhasil ditambahkan.");
@@ -390,30 +401,56 @@ function Workspace({ auth, onLogout }) {
     importStudents: async (file) => {
       try {
         const rows = await readWorkbookRows(file, "TEMPLATE_SISWA");
-        let added = 0; let skipped = 0; const next = { ...data, students: [...data.students], classes: [...data.classes] };
-        const known = new Set(next.students.map((student) => text(student.nisn || student.full_name).toLowerCase()));
-        for (const row of rows) {
-          if (isExampleRow(row) || !text(row.full_name)) { skipped += 1; continue; }
-          const name = text(row.full_name); const nisn = text(row.nisn); const className = text(row.class_name || row.kelas);
-          if (!className || known.has((nisn || name).toLowerCase())) { skipped += 1; continue; }
-          next.students.push({ id: id("student"), full_name: name, nis: text(row.nis), nisn, gender: text(row.gender), address: text(row.address), parent_phone: text(row.parent_phone), class_name: className, active: text(row.active).toLowerCase() !== "false" });
-          known.add((nisn || name).toLowerCase()); added += 1;
-          if (!next.classes.some((item) => item.name.toLowerCase() === className.toLowerCase())) next.classes.push({ id: id("class"), name: className, active: true });
+        let added = 0; let skipped = 0;
+        if (auth.mode === "local") {
+          const next = { ...data, students: [...data.students], classes: [...data.classes] };
+          const known = new Set(next.students.map((student) => text(student.nisn || student.full_name).toLowerCase()));
+          for (const row of rows) {
+            if (isExampleRow(row) || !text(row.full_name)) { skipped += 1; continue; }
+            const name = text(row.full_name); const nisn = text(row.nisn); const className = text(row.class_name || row.kelas);
+            if (!className || known.has((nisn || name).toLowerCase())) { skipped += 1; continue; }
+            let classRow = next.classes.find((item) => item.name.toLowerCase() === className.toLowerCase());
+            if (!classRow) { classRow = { id: id("class"), name: className, active: true }; next.classes.push(classRow); }
+            next.students.push({ id: id("student"), full_name: name, nis: text(row.nis), nisn, gender: text(row.gender), address: text(row.address), parent_phone: text(row.parent_phone), class_id: classRow.id, class_name: className, active: text(row.active).toLowerCase() !== "false" });
+            known.add((nisn || name).toLowerCase()); added += 1;
+          }
+          commit(next);
+        } else {
+          const known = new Set(data.students.map((student) => text(student.nisn || student.full_name).toLowerCase()));
+          const year = data.academicYears[0];
+          const remoteClasses = [...data.classes];
+          for (const row of rows) {
+            if (isExampleRow(row) || !text(row.full_name)) { skipped += 1; continue; }
+            const name = text(row.full_name); const nisn = text(row.nisn); const className = text(row.class_name || row.kelas);
+            if (!className || known.has((nisn || name).toLowerCase()) || !year) { skipped += 1; continue; }
+            let classRow = remoteClasses.find((item) => item.name.toLowerCase() === className.toLowerCase());
+            if (!classRow) {
+              const classResult = await supabase.from("classes").insert({ school_id: data.school.id, academic_year_id: year.id, name: className, grade_level: className.replace(/[^0-9]/g, ""), active: true }).select().single();
+              if (classResult.error) { skipped += 1; continue; }
+              classRow = classResult.data; remoteClasses.push(classRow);
+            }
+            const result = await supabase.from("students").insert({ school_id: data.school.id, full_name: name, nis: text(row.nis) || null, nisn: nisn || null, gender: text(row.gender) || null, address: text(row.address) || null, parent_phone: text(row.parent_phone) || null, active: text(row.active).toLowerCase() !== "false" }).select().single();
+            if (result.error) { skipped += 1; continue; }
+            await supabase.from("enrollments").insert({ school_id: data.school.id, class_id: classRow.id, student_id: result.data.id, academic_year_id: year.id, active: true });
+            known.add((nisn || name).toLowerCase()); added += 1;
+          }
+          await refresh();
         }
-        if (auth.mode === "local") commit(next); else { for (const student of next.students.slice(data.students.length)) { const result = await supabase.from("students").insert({ school_id: data.school.id, full_name: student.full_name, nis: student.nis || null, nisn: student.nisn || null, gender: student.gender || null, address: student.address || null, parent_phone: student.parent_phone || null, active: student.active }); if (result.error) skipped += 1; } await refresh(); }
         notify("success", "Import siswa selesai: " + added + " ditambahkan, " + skipped + " dilewati.");
       } catch (err) { notify("error", err.message || "File siswa belum dapat dibaca."); }
     },
     saveAttendance: async (date, statuses, classId) => {
       const classRow = data.classes.find((item) => item.id === classId) || data.classes[0];
+      const className = text(classRow?.name).toLowerCase();
+      const roster = data.students.filter((student) => !classRow || student.class_id === classRow.id || text(student.class_name).toLowerCase() === className || (data.classes.length === 1 && !student.class_id && !student.class_name));
       try {
         if (auth.mode === "local") {
           const kept = data.attendance.filter((item) => !(item.attendance_date === date && item.class_id === classRow?.id));
-          const records = data.students.map((student) => ({ id: id("attendance"), student_id: student.id, class_id: classRow?.id, attendance_date: date, status: statuses[student.id] || "H", note: "" }));
+          const records = roster.map((student) => ({ id: id("attendance"), student_id: student.id, class_id: classRow?.id, attendance_date: date, status: statuses[student.id] || "H", note: "" }));
           commit({ ...data, attendance: [...kept, ...records] });
         } else {
           await supabase.from("attendance_records").delete().eq("school_id", data.school.id).eq("class_id", classRow.id).eq("attendance_date", date).eq("recorded_by", auth.user.id);
-          const payload = data.students.map((student) => ({ school_id: data.school.id, class_id: classRow.id, subject_id: null, student_id: student.id, recorded_by: auth.user.id, attendance_date: date, status: statuses[student.id] || "H" }));
+          const payload = roster.map((student) => ({ school_id: data.school.id, class_id: classRow.id, subject_id: null, student_id: student.id, recorded_by: auth.user.id, attendance_date: date, status: statuses[student.id] || "H" }));
           const result = await supabase.from("attendance_records").insert(payload); if (result.error) throw result.error; await refresh();
         }
         notify("success", "Presensi " + date + " berhasil disimpan.");
@@ -465,9 +502,22 @@ async function saveGradeRows(rows, data, auth, refresh, commit) {
     if (!student || !className || !subjectName || !title || Number.isNaN(point)) { skipped += 1; continue; }
     const grade = { id: id("grade"), student_id: student.id, student_nisn: student.nisn || studentNisn, student_name: student.full_name, class_name: className, subject_name: subjectName, academic_year: text(row.academic_year), semester: text(row.semester), assessment_title: title, assessment_category: text(row.assessment_category || "LAINNYA"), assessment_date: text(row.assessment_date) || today(), point, max_point: Number(text(row.max_point).replace(",", ".")) || 100, comment: text(row.comment) };
     if (auth.mode === "local") { localGrades.push(grade); added += 1; continue; }
-    const classRow = data.classes.find((item) => text(item.name).toLowerCase() === className.toLowerCase());
-    const subjectRow = data.subjects.find((item) => text(item.name).toLowerCase() === subjectName.toLowerCase());
-    if (!classRow || !subjectRow) { skipped += 1; continue; }
+    let classRow = data.classes.find((item) => text(item.name).toLowerCase() === className.toLowerCase());
+    let subjectRow = data.subjects.find((item) => text(item.name).toLowerCase() === subjectName.toLowerCase());
+    if (!classRow) {
+      const year = data.academicYears[0];
+      if (!year) { skipped += 1; continue; }
+      const classResult = await supabase.from("classes").insert({ school_id: data.school.id, academic_year_id: year.id, name: className, grade_level: className.replace(/[^0-9]/g, ""), active: true }).select().single();
+      if (classResult.error) { skipped += 1; continue; }
+      classRow = classResult.data;
+    }
+    if (!subjectRow) {
+      const subjectResult = await supabase.from("subjects").insert({ school_id: data.school.id, name: subjectName }).select().single();
+      if (subjectResult.error) { skipped += 1; continue; }
+      subjectRow = subjectResult.data;
+    }
+    const year = data.academicYears[0];
+    if (year && student.id) await supabase.from("enrollments").upsert({ school_id: data.school.id, class_id: classRow.id, student_id: student.id, academic_year_id: year.id, active: true }, { onConflict: "class_id,student_id,academic_year_id" });
     const cacheKey = [classRow.id, subjectRow.id, title, grade.assessment_date].join("|");
     let assessment = assessmentCache[cacheKey];
     if (!assessment) {
@@ -529,14 +579,16 @@ function StudentsPage({ data, onAdd, onImport }) {
   const visible = data.students.filter((item) => (text(item.full_name) + " " + text(item.nis) + " " + text(item.nisn)).toLowerCase().includes(query.toLowerCase()));
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const submit = async (event) => { event.preventDefault(); if (!form.full_name) return; await onAdd(form); setForm({ ...form, full_name: "", nis: "", nisn: "", address: "", parent_phone: "" }); setShowForm(false); };
-  return <PageSection eyebrow="DATA KELAS" title="Siswa" action={<div className="section-actions"><ImportActions onImport={onImport} /><button className="primary-button" onClick={() => setShowForm((current) => !current)}><Plus size={16} /> Tambah siswa</button></div>}><div className="helper-banner"><FileSpreadsheet size={18} /><span>Format import sudah disiapkan. Isi sheet TEMPLATE_SISWA, hapus baris contoh, lalu unggah kembali.</span></div>{showForm && <form className="inline-form" onSubmit={submit}><Field label="Nama lengkap" value={form.full_name} onChange={(value) => update("full_name", value)} placeholder="Nama siswa" /><Field label="NISN" value={form.nisn} onChange={(value) => update("nisn", value)} placeholder="Opsional" /><Field label="Kelas" value={form.class_name} onChange={(value) => update("class_name", value)} placeholder="7A" /><label className="field"><span>Jenis kelamin</span><select value={form.gender} onChange={(event) => update("gender", event.target.value)}><option value="">Pilih</option><option value="L">L</option><option value="P">P</option></select></label><button className="primary-button"><Save size={15} /> Simpan</button></form>}<div className="toolbar"><div className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari nama, NIS, atau NISN…" /></div><span className="result-count">{visible.length} siswa</span></div><div className="table-card">{visible.length === 0 ? <EmptyState title="Belum ada data siswa" desc="Tambahkan manual atau import template untuk memulai." /> : visible.map((student) => <div className="data-row" key={student.id}><span className="person-avatar">{avatarName(student.full_name)}</span><div className="person-copy"><strong>{student.full_name}</strong><small>{student.nisn || "NISN belum diisi"} · {data.classes[0]?.name || "Kelas belum dipilih"}</small></div><span className="row-meta">{student.gender || "-"}</span><span className="row-meta">{student.active === false ? "Nonaktif" : "Aktif"}</span></div>)}</div></PageSection>;
+  return <PageSection eyebrow="DATA KELAS" title="Siswa" action={<div className="section-actions"><ImportActions onImport={onImport} /><button className="primary-button" onClick={() => setShowForm((current) => !current)}><Plus size={16} /> Tambah siswa</button></div>}><div className="helper-banner"><FileSpreadsheet size={18} /><span>Format import sudah disiapkan. Isi sheet TEMPLATE_SISWA, hapus baris contoh, lalu unggah kembali.</span></div>{showForm && <form className="inline-form" onSubmit={submit}><Field label="Nama lengkap" value={form.full_name} onChange={(value) => update("full_name", value)} placeholder="Nama siswa" /><Field label="NISN" value={form.nisn} onChange={(value) => update("nisn", value)} placeholder="Opsional" /><Field label="Kelas" value={form.class_name} onChange={(value) => update("class_name", value)} placeholder="7A" /><label className="field"><span>Jenis kelamin</span><select value={form.gender} onChange={(event) => update("gender", event.target.value)}><option value="">Pilih</option><option value="L">L</option><option value="P">P</option></select></label><button className="primary-button"><Save size={15} /> Simpan</button></form>}<div className="toolbar"><div className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari nama, NIS, atau NISN…" /></div><span className="result-count">{visible.length} siswa</span></div><div className="table-card">{visible.length === 0 ? <EmptyState title="Belum ada data siswa" desc="Tambahkan manual atau import template untuk memulai." /> : visible.map((student) => <div className="data-row" key={student.id}><span className="person-avatar">{avatarName(student.full_name)}</span><div className="person-copy"><strong>{student.full_name}</strong><small>{student.nisn || "NISN belum diisi"} · {student.class_name || data.classes.find((item) => item.id === student.class_id)?.name || "Kelas belum dipilih"}</small></div><span className="row-meta">{student.gender || "-"}</span><span className="row-meta">{student.active === false ? "Nonaktif" : "Aktif"}</span></div>)}</div></PageSection>;
 }
 
 function AttendancePage({ data, onSave }) {
   const [date, setDate] = useState(today()); const [classId, setClassId] = useState(data.classes[0]?.id || ""); const [statuses, setStatuses] = useState({});
-  useEffect(() => { const next = {}; data.students.forEach((student) => { const record = data.attendance.find((item) => item.student_id === student.id && item.attendance_date === date && (!classId || item.class_id === classId)); next[student.id] = record?.status || "H"; }); setStatuses(next); }, [date, classId, data.students, data.attendance]);
+  const classRow = data.classes.find((item) => item.id === classId) || data.classes[0];
+  const roster = data.students.filter((student) => !classRow || student.class_id === classRow.id || text(student.class_name).toLowerCase() === text(classRow.name).toLowerCase() || (data.classes.length === 1 && !student.class_id && !student.class_name));
+  useEffect(() => { const next = {}; roster.forEach((student) => { const record = data.attendance.find((item) => item.student_id === student.id && item.attendance_date === date && (!classId || item.class_id === classId)); next[student.id] = record?.status || "H"; }); setStatuses(next); }, [date, classId, data.students, data.attendance]);
   const counts = Object.values(statuses).reduce((result, value) => ({ ...result, [value]: (result[value] || 0) + 1 }), {});
-  return <PageSection eyebrow="CATATAN KEHADIRAN" title="Presensi" action={<button className="primary-button" onClick={() => onSave(date, statuses, classId)}><Save size={16} /> Simpan presensi</button>}><div className="control-row"><label className="compact-field"><span>Tanggal</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label className="compact-field"><span>Kelas</span><select value={classId} onChange={(event) => setClassId(event.target.value)}>{data.classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div><div className="attendance-summary"><div><strong>{data.students.length}</strong><span>Total siswa</span></div><div className="present"><strong>{counts.H || 0}</strong><span>Hadir</span></div><div className="permission"><strong>{(counts.S || 0) + (counts.I || 0)}</strong><span>Sakit / izin</span></div><div className="absent"><strong>{counts.A || 0}</strong><span>Alpa</span></div></div><div className="table-card">{data.students.length === 0 ? <EmptyState title="Belum ada siswa" desc="Isi data siswa sebelum membuat presensi." /> : data.students.map((student) => <div className="data-row attendance-row" key={student.id}><span className="person-avatar">{avatarName(student.full_name)}</span><div className="person-copy"><strong>{student.full_name}</strong><small>{student.nisn || "NISN belum diisi"}</small></div><div className="attendance-actions">{[["H", "Hadir"], ["S", "Sakit"], ["I", "Izin"], ["A", "Alpa"]].map(([code, label]) => <button key={code} title={label} className={statuses[student.id] === code ? "attendance-button active " + code : "attendance-button"} onClick={() => setStatuses((current) => ({ ...current, [student.id]: code }))}>{code}</button>)}</div></div>)}</div></PageSection>;
+  return <PageSection eyebrow="CATATAN KEHADIRAN" title="Presensi" action={<button className="primary-button" onClick={() => onSave(date, statuses, classId)}><Save size={16} /> Simpan presensi</button>}><div className="control-row"><label className="compact-field"><span>Tanggal</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label className="compact-field"><span>Kelas</span><select value={classId} onChange={(event) => setClassId(event.target.value)}>{data.classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div><div className="attendance-summary"><div><strong>{roster.length}</strong><span>Total siswa</span></div><div className="present"><strong>{counts.H || 0}</strong><span>Hadir</span></div><div className="permission"><strong>{(counts.S || 0) + (counts.I || 0)}</strong><span>Sakit / izin</span></div><div className="absent"><strong>{counts.A || 0}</strong><span>Alpa</span></div></div><div className="table-card">{roster.length === 0 ? <EmptyState title="Belum ada siswa" desc="Isi data siswa sebelum membuat presensi." /> : roster.map((student) => <div className="data-row attendance-row" key={student.id}><span className="person-avatar">{avatarName(student.full_name)}</span><div className="person-copy"><strong>{student.full_name}</strong><small>{student.nisn || "NISN belum diisi"}</small></div><div className="attendance-actions">{[["H", "Hadir"], ["S", "Sakit"], ["I", "Izin"], ["A", "Alpa"]].map(([code, label]) => <button key={code} title={label} className={statuses[student.id] === code ? "attendance-button active " + code : "attendance-button"} onClick={() => setStatuses((current) => ({ ...current, [student.id]: code }))}>{code}</button>)}</div></div>)}</div></PageSection>;
 }
 
 function JournalPage({ data, onAdd }) {
