@@ -1,4 +1,6 @@
 const API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models";
+const PRODUCTION_SUPABASE_URL = "https://glgpksdzregenrhfjasd.supabase.co";
+const PRODUCTION_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_Puv84iHF9e1WeVO9gupkNg_-7bm4VW7";
 
 function cleanKey(value) {
   const key = String(value || "").trim();
@@ -15,8 +17,8 @@ function configuredKeys() {
 }
 
 async function verifyUser(request) {
-  const url = String(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/$/, "");
-  const key = cleanKey(process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY);
+  const url = String(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || PRODUCTION_SUPABASE_URL).replace(/\/$/, "");
+  const key = cleanKey(process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || PRODUCTION_SUPABASE_PUBLISHABLE_KEY);
   const token = String(request.headers.authorization || "").replace(/^Bearer\s+/i, "").trim();
   if (!url || !key) throw Object.assign(new Error("Database aplikasi belum dikonfigurasi."), { status: 503 });
   if (!token) throw Object.assign(new Error("Silakan masuk kembali untuk menggunakan Asisten Guru."), { status: 401 });
