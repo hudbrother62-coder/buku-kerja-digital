@@ -1,250 +1,576 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import * as XLSX from "xlsx";
 import {
-  ArrowUp,
+  ArrowRight,
   BarChart3,
   BookOpen,
   CalendarCheck2,
   Check,
   ChevronDown,
   ClipboardList,
+  Download,
+  FileSpreadsheet,
   FileText,
   GraduationCap,
   LayoutDashboard,
+  LogOut,
   Menu,
   Moon,
-  MoreHorizontal,
   Plus,
+  Save,
   Search,
   Settings2,
   Sparkles,
   Sun,
+  Upload,
   Users,
-  X
+  X,
 } from "lucide-react";
+import { isSupabaseConfigured, supabase } from "./lib/supabase";
 import "./styles.css";
 
-const menu = [
+const TEMPLATE_URL = "/templates/Bantu_Beres_Template_Import.xlsx";
+const SESSION_KEY = "bb_buku_kerja_session";
+const ACCOUNTS_KEY = "bb_buku_kerja_accounts";
+const DATA_KEY = "bb_buku_kerja_data";
+const API_KEY = "bb_buku_kerja_gemini_key";
+
+const NAV_ITEMS = [
   { id: "dashboard", label: "Beranda", icon: LayoutDashboard },
-  { id: "assistant", label: "Asisten AI", icon: Sparkles },
+  { id: "assistant", label: "Asisten Guru", icon: Sparkles },
   { id: "students", label: "Siswa", icon: Users },
   { id: "attendance", label: "Presensi", icon: CalendarCheck2 },
   { id: "journal", label: "Jurnal", icon: BookOpen },
   { id: "grades", label: "Penilaian", icon: ClipboardList },
-  { id: "reports", label: "Rekap & laporan", icon: BarChart3 }
+  { id: "reports", label: "Rekap & laporan", icon: BarChart3 },
 ];
 
-const spaces = [
-  { id: "homeroom", title: "Wali Kelas 7A", subtitle: "Ruang kerja utama" },
-  { id: "math", title: "Matematika", subtitle: "4 kelas yang diajar" },
-  { id: "informatics", title: "Informatika", subtitle: "Kelas 8B" }
-];
+const emptyData = () => ({
+  profile: { fullName: "", schoolName: "", role: "wali_kelas", setupComplete: false },
+  school: null,
+  academicYears: [],
+  classes: [],
+  subjects: [],
+  students: [],
+  attendance: [],
+  journals: [],
+  grades: [],
+});
 
-const students = [
-  { name: "Alya Rahma", initials: "AR", status: "Hadir", score: 89, tone: "green" },
-  { name: "Bagas Pratama", initials: "BP", status: "Izin", score: 76, tone: "amber" },
-  { name: "Citra Lestari", initials: "CL", status: "Hadir", score: 94, tone: "blue" },
-  { name: "Dimas Saputra", initials: "DS", status: "Belum diisi", score: 68, tone: "rose" }
-];
+function id(prefix) {
+  if (globalThis.crypto?.randomUUID) return prefix + "-" + globalThis.crypto.randomUUID();
+  return prefix + "-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+}
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function text(value) {
+  return value === null || value === undefined ? "" : String(value).trim();
+}
+
+function readJson(key, fallback = null) {
+  try {
+    return JSON.parse(window.localStorage.getItem(key) || "null") ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(key, value) {
+  window.localStorage.setItem(key, JSON.stringify(value));
+}
+
+function accountKey(user) {
+  return DATA_KEY + ":" + encodeURIComponent(user.id || user.email || "user");
+}
+
+function roleLabel(role) {
+  return role === "guru_mapel" ? "Guru mata pelajaran" : "Wali kelas";
+}
+
+function avatarName(name) {
+  return text(name)
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((item) => item[0])
+    .join("")
+    .toUpperCase() || "GB";
+}
+
+function normalizeRow(row) {
+  return Object.fromEntries(
+    Object.entries(row).map(([key, value]) => [
+      key.toLowerCase().trim().replace(/\s+/g, "_"),
+      value,
+    ]),
+  );
+}
+
+function isExampleRow(row) {
+  return Object.values(row).some((value) => text(value).toUpperCase().includes("CONTOH"));
+}
+
+async function readWorkbookRows(file, preferredSheet) {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: "array", cellDates: false });
+  const sheetName = workbook.Sheets[preferredSheet] ? preferredSheet : workbook.SheetNames[0];
+  if (!sheetName) return [];
+  return XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "", raw: false }).map(normalizeRow);
+}
+
+function saveRowsAsCsv(filename, rows) {
+  const sheet = XLSX.utils.json_to_sheet(rows);
+  const csv = XLSX.utils.sheet_to_csv(sheet);
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
 
 function Logo() {
   return (
-    <div className="brand-mark" aria-label="Bantu Beres">
-      <span className="brand-check"><Check size={17} strokeWidth={3} /></span>
-      <span className="brand-copy">
-        <strong>Bantu Beres</strong>
-        <small>Buku Kerja Digital</small>
-      </span>
+    <div className="brand-logo-wrap">
+      <img src="/brand/bantu-beres.png" alt="Bantu Beres" className="brand-logo" />
     </div>
   );
 }
 
 function App() {
-  const [active, setActive] = useState("dashboard");
-  const [space, setSpace] = useState(spaces[0]);
-  const [spaceOpen, setSpaceOpen] = useState(false);
-  const [dark, setDark] = useState(false);
-  const [mobileMenu, setMobileMenu] = useState(false);
+  const [auth, setAuth] = useState(null);
+  const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
+
+  useEffect(() => {
+    if (!supabase) {
+      const localUser = readJson(SESSION_KEY);
+      if (localUser) setAuth({ mode: "local", user: localUser });
+      return;
+    }
+    let mounted = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setAuth(data.session ? { mode: "supabase", user: data.session.user } : null);
+      setAuthReady(true);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuth(session ? { mode: "supabase", user: session.user } : null);
+    });
+    return () => {
+      mounted = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  if (!authReady) return <LoadingScreen />;
+  if (!auth) return <AuthScreen onAuth={setAuth} />;
+  return <Workspace auth={auth} onLogout={() => setAuth(null)} />;
+}
+
+function LoadingScreen() {
+  return <div className="loading-screen"><Logo /><span>Memuat ruang kerja…</span></div>;
+}
+
+function AuthScreen({ onAuth }) {
+  const [mode, setMode] = useState("login");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [form, setForm] = useState({ name: "", email: "", password: "", school: "", role: "wali_kelas" });
+
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async (event) => {
+    event.preventDefault();
+    setNotice(null);
+    if (!form.email || !form.password || (mode === "register" && (!form.name || !form.school))) {
+      setNotice({ type: "error", message: "Lengkapi data yang wajib diisi terlebih dahulu." });
+      return;
+    }
+    setBusy(true);
+    try {
+      if (!supabase) {
+        const accounts = readJson(ACCOUNTS_KEY, {});
+        const email = form.email.toLowerCase().trim();
+        if (mode === "register") {
+          if (accounts[email]) throw new Error("Email tersebut sudah terdaftar di mode uji lokal.");
+          const account = { id: id("local"), email, password: form.password, name: form.name, school: form.school, role: form.role };
+          accounts[email] = account;
+          writeJson(ACCOUNTS_KEY, accounts);
+          const user = { id: account.id, email: account.email, user_metadata: { full_name: account.name, school_name: account.school, role: account.role } };
+          writeJson(SESSION_KEY, user);
+          onAuth({ mode: "local", user });
+        } else {
+          const account = accounts[email];
+          if (!account || account.password !== form.password) throw new Error("Email atau kata sandi mode uji lokal tidak cocok.");
+          const user = { id: account.id, email: account.email, user_metadata: { full_name: account.name, school_name: account.school, role: account.role } };
+          writeJson(SESSION_KEY, user);
+          onAuth({ mode: "local", user });
+        }
+      } else if (mode === "login") {
+        const { data, error } = await supabase.auth.signInWithPassword({ email: form.email, password: form.password });
+        if (error) throw error;
+        onAuth({ mode: "supabase", user: data.user });
+      } else {
+        const { data, error } = await supabase.auth.signUp({
+          email: form.email,
+          password: form.password,
+          options: { data: { full_name: form.name, school_name: form.school, role: form.role } },
+        });
+        if (error) throw error;
+        if (data.session) onAuth({ mode: "supabase", user: data.user });
+        else setNotice({ type: "success", message: "Akun berhasil dibuat. Periksa email untuk mengaktifkan akun, lalu masuk." });
+      }
+    } catch (error) {
+      setNotice({ type: "error", message: error.message || "Terjadi kesalahan. Coba lagi." });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <div className={dark ? "app dark" : "app"}>
-      <aside className={mobileMenu ? "sidebar open" : "sidebar"}>
-        <div className="sidebar-top">
-          <Logo />
-          <button className="icon-button mobile-close" onClick={() => setMobileMenu(false)} aria-label="Tutup menu"><X size={19} /></button>
-        </div>
-        <div className="workspace-label">RUANG KERJA</div>
-        <button className="workspace-switch" onClick={() => setSpaceOpen(!spaceOpen)}>
-          <span className="workspace-avatar">7A</span>
-          <span className="workspace-text"><strong>{space.title}</strong><small>{space.subtitle}</small></span>
-          <ChevronDown size={16} />
-        </button>
-        {spaceOpen && (
-          <div className="workspace-menu">
-            {spaces.map(item => (
-              <button key={item.id} className={space.id === item.id ? "workspace-option selected" : "workspace-option"} onClick={() => { setSpace(item); setSpaceOpen(false); }}>
-                <span>{item.title}</span><small>{item.subtitle}</small>
-              </button>
-            ))}
-          </div>
-        )}
-        <nav className="nav-list">
-          {menu.map(item => {
-            const Icon = item.icon;
-            return <button key={item.id} className={active === item.id ? "nav-item active" : "nav-item"} onClick={() => { setActive(item.id); setMobileMenu(false); }}><Icon size={19} /><span>{item.label}</span>{item.id === "assistant" && <span className="nav-badge">AI</span>}</button>;
-          })}
-        </nav>
-        <div className="sidebar-bottom">
-          <button className="nav-item" onClick={() => setActive("settings")}><Settings2 size={19} /><span>Pengaturan</span></button>
-          <div className="user-mini"><div className="avatar">AH</div><div><strong>Agus Heri</strong><small>Guru & wali kelas</small></div><MoreHorizontal size={17} /></div>
-        </div>
-      </aside>
-
-      <main className="main">
-        <header className="topbar">
-          <button className="icon-button mobile-menu-button" onClick={() => setMobileMenu(true)} aria-label="Buka menu"><Menu size={20} /></button>
-          <div className="topbar-title"><span className="eyebrow">Buku Kerja Digital</span><h1>{active === "assistant" ? "Asisten Guru" : pageTitle(active)}</h1></div>
-          <div className="topbar-actions">
-            <button className="theme-button" onClick={() => setDark(!dark)} aria-label="Ubah tema">{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
-            <div className="top-avatar">AH</div>
-          </div>
-        </header>
-
-        <div className="content">
-          {active === "dashboard" && <Dashboard setActive={setActive} space={space} />}
-          {active === "assistant" && <Assistant />}
-          {active === "students" && <Students />}
-          {active === "attendance" && <Attendance />}
-          {active === "journal" && <Journal />}
-          {active === "grades" && <Grades />}
-          {active === "reports" && <Reports />}
-          {active === "settings" && <Settings />}
-        </div>
-      </main>
-
-      <nav className="mobile-nav">
-        {menu.slice(0, 5).map(item => {
-          const Icon = item.icon;
-          return <button key={item.id} className={active === item.id ? "mobile-nav-item active" : "mobile-nav-item"} onClick={() => setActive(item.id)}><Icon size={19} /><span>{item.label === "Asisten AI" ? "Asisten" : item.label.split(" ")[0]}</span></button>;
-        })}
-      </nav>
+    <div className="auth-screen">
+      <div className="auth-brand"><Logo /><span>Buku kerja digital yang membantu guru menyelesaikan pekerjaan administrasi dengan lebih tenang.</span></div>
+      <div className="auth-card">
+        <div className="auth-heading"><p className="eyebrow">{mode === "login" ? "SELAMAT DATANG KEMBALI" : "MULAI RUANG KERJA"}</p><h1>{mode === "login" ? "Masuk ke Bantu Beres" : "Buat akun guru"}</h1><p>{mode === "login" ? "Lanjutkan pekerjaan kelasmu dari tempat terakhir." : "Siapkan ruang kerja pribadi untuk kelas dan mata pelajaranmu."}</p></div>
+        {!isSupabaseConfigured && <div className="setup-notice"><span>Mode uji lokal</span><small>Supabase belum dihubungkan. Data tersimpan di browser ini sampai database terpisah diaktifkan.</small></div>}
+        {notice && <div className={"form-notice " + notice.type}>{notice.message}</div>}
+        <div className="auth-tabs"><button className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setNotice(null); }}>Masuk</button><button className={mode === "register" ? "active" : ""} onClick={() => { setMode("register"); setNotice(null); }}>Daftar</button></div>
+        <form onSubmit={submit} className="auth-form">
+          {mode === "register" && <><Field label="Nama lengkap" value={form.name} onChange={(value) => update("name", value)} placeholder="Contoh: Rina Wulandari" /><Field label="Nama sekolah" value={form.school} onChange={(value) => update("school", value)} placeholder="Contoh: SMP Negeri 1" /><label className="field"><span>Peran utama</span><select value={form.role} onChange={(event) => update("role", event.target.value)}><option value="wali_kelas">Wali kelas</option><option value="guru_mapel">Guru mata pelajaran</option></select></label></>}
+          <Field label="Email" value={form.email} onChange={(value) => update("email", value)} placeholder="nama@sekolah.sch.id" type="email" />
+          <Field label="Kata sandi" value={form.password} onChange={(value) => update("password", value)} placeholder="Minimal 6 karakter" type="password" />
+          <button className="primary-button wide" disabled={busy}>{busy ? "Memproses…" : mode === "login" ? "Masuk ke ruang kerja" : "Buat akun"}<ArrowRight size={17} /></button>
+        </form>
+        <p className="auth-footnote">Dengan melanjutkan, kamu tetap menjadi pemeriksa akhir untuk semua catatan, nilai, dan rekomendasi AI.</p>
+      </div>
     </div>
   );
 }
 
-function pageTitle(id) {
-  return menu.find(item => item.id === id)?.label || "Pengaturan";
+function Field({ label, value, onChange, placeholder, type = "text" }) {
+  return <label className="field"><span>{label}</span><input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} /></label>;
 }
 
-function Dashboard({ setActive, space }) {
-  return (
-    <>
-      <section className="welcome-row">
-        <div><p className="eyebrow">Kamis, 6 September 2026</p><h2>Selamat pagi, Agus.</h2><p className="muted">Berikut ringkasan pekerjaan di <strong>{space.title}</strong>.</p></div>
-        <button className="primary-button" onClick={() => setActive("assistant")}><Sparkles size={17} /> Minta bantuan AI</button>
-      </section>
-      <section className="stat-grid">
-        <Stat label="Siswa aktif" value="32" meta="di kelas 7A" icon={Users} tone="teal" />
-        <Stat label="Kehadiran hari ini" value="96,8%" meta="1 siswa izin" icon={CalendarCheck2} tone="green" />
-        <Stat label="Jurnal bulan ini" value="12" meta="2 belum lengkap" icon={BookOpen} tone="amber" />
-        <Stat label="Nilai terisi" value="84%" meta="dari 5 penilaian" icon={ClipboardList} tone="blue" />
-      </section>
-      <section className="dashboard-grid">
-        <div className="panel recent-panel"><div className="panel-head"><div><p className="eyebrow">AKTIVITAS TERBARU</p><h3>Yang perlu diselesaikan</h3></div><button className="text-button" onClick={() => setActive("reports")}>Lihat semua</button></div><div className="task-list"><Task icon={BookOpen} title="Lengkapi jurnal Matematika" meta="Kelas 7A · Hari ini" action="Buka jurnal" onClick={() => setActive("journal")} /><Task icon={ClipboardList} title="Isi nilai tugas pecahan" meta="32 siswa · Belum selesai" action="Isi nilai" onClick={() => setActive("grades")} /><Task icon={CalendarCheck2} title="Periksa presensi siswa" meta="1 catatan perlu ditinjau" action="Periksa" onClick={() => setActive("attendance")} /></div></div>
-        <div className="panel ai-panel"><div className="ai-orb"><Sparkles size={22} /></div><p className="eyebrow">ASISTEN GURU</p><h3>Ada yang ingin dibereskan?</h3><p className="muted">Tulis perintah seperti biasa. AI membantu menyusun, merangkum, dan merekap pekerjaanmu.</p><button className="secondary-button" onClick={() => setActive("assistant")}>Buka Asisten AI <ArrowUp size={16} /></button></div>
-      </section>
-      <section className="panel preview-panel"><div className="panel-head"><div><p className="eyebrow">PRESENSI KELAS</p><h3>Ringkasan hari ini</h3></div><button className="secondary-button small" onClick={() => setActive("attendance")}>Buka presensi</button></div><div className="student-preview">{students.map(s => <div className="student-row" key={s.name}><div className={"student-avatar " + s.tone}>{s.initials}</div><div className="student-name"><strong>{s.name}</strong><small>Nilai rata-rata {s.score}</small></div><span className={"status " + s.tone}>{s.status}</span></div>)}</div></section>
-    </>
-  );
+async function fetchRemoteData(user) {
+  const data = emptyData();
+  const metadata = user.user_metadata || {};
+  data.profile = { fullName: metadata.full_name || user.email || "Guru", schoolName: metadata.school_name || "", role: metadata.role || "wali_kelas", setupComplete: false };
+  const schoolResult = await supabase.from("schools").select("*").eq("owner_id", user.id).order("created_at", { ascending: true }).limit(1);
+  if (schoolResult.error) throw schoolResult.error;
+  const school = schoolResult.data?.[0] || null;
+  if (!school) return data;
+  data.school = school;
+  data.profile.schoolName = school.name;
+  data.profile.setupComplete = true;
+  const results = await Promise.all([
+    supabase.from("academic_years").select("*").eq("school_id", school.id).order("active", { ascending: false }),
+    supabase.from("classes").select("*").eq("school_id", school.id).order("name"),
+    supabase.from("subjects").select("*").eq("school_id", school.id).order("name"),
+    supabase.from("students").select("*").eq("school_id", school.id).order("full_name"),
+    supabase.from("attendance_records").select("*").eq("school_id", school.id).order("attendance_date", { ascending: false }).limit(1000),
+    supabase.from("teaching_journals").select("*").eq("school_id", school.id).order("journal_date", { ascending: false }).limit(300),
+    supabase.from("assessments").select("*").eq("school_id", school.id).order("assessment_date", { ascending: false }).limit(300),
+    supabase.from("assessment_scores").select("*").limit(2000),
+  ]);
+  const [years, classes, subjects, students, attendance, journals, assessments, scores] = results.map((result) => result.data || []);
+  data.academicYears = years;
+  data.classes = classes;
+  data.subjects = subjects;
+  data.students = students;
+  data.attendance = attendance;
+  data.journals = journals;
+  const assessmentMap = Object.fromEntries(assessments.map((item) => [item.id, item]));
+  data.grades = scores.map((score) => {
+    const assessment = assessmentMap[score.assessment_id] || {};
+    const student = students.find((item) => item.id === score.student_id);
+    const classRow = classes.find((item) => item.id === assessment.class_id);
+    const subject = subjects.find((item) => item.id === assessment.subject_id);
+    return { id: score.id, student_id: score.student_id, student_name: student?.full_name || "", student_nisn: student?.nisn || "", class_name: classRow?.name || "", subject_name: subject?.name || "", assessment_title: assessment.title || "", assessment_category: assessment.category || "", assessment_date: assessment.assessment_date || "", point: score.point, max_point: assessment.max_point || 100, comment: score.comment || "" };
+  });
+  return data;
 }
 
-function Stat({ label, value, meta, icon: Icon, tone }) {
-  return <div className="stat-card"><div className={"stat-icon " + tone}><Icon size={19} /></div><div><p>{label}</p><strong>{value}</strong><small>{meta}</small></div></div>;
+async function createWorkspace(form, auth) {
+  if (auth.mode === "local") {
+    const data = emptyData();
+    data.profile = { fullName: form.fullName, schoolName: form.schoolName, role: form.role, setupComplete: true };
+    data.classes = [{ id: id("class"), name: form.className, grade_level: form.className.replace(/[^0-9]/g, ""), active: true }];
+    data.subjects = form.subjectName ? [{ id: id("subject"), name: form.subjectName }] : [];
+    writeJson(accountKey(auth.user), data);
+    return data;
+  }
+  const schoolResult = await supabase.from("schools").insert({ owner_id: auth.user.id, name: form.schoolName, teacher_name: form.fullName }).select().single();
+  if (schoolResult.error) throw schoolResult.error;
+  const yearResult = await supabase.from("academic_years").insert({ school_id: schoolResult.data.id, label: form.academicYear, semester: "ganjil", active: true }).select().single();
+  if (yearResult.error) throw yearResult.error;
+  const classResult = await supabase.from("classes").insert({ school_id: schoolResult.data.id, academic_year_id: yearResult.data.id, name: form.className, grade_level: form.className.replace(/[^0-9]/g, ""), active: true }).select().single();
+  if (classResult.error) throw classResult.error;
+  let subject = null;
+  if (form.subjectName) {
+    const subjectResult = await supabase.from("subjects").insert({ school_id: schoolResult.data.id, name: form.subjectName }).select().single();
+    if (subjectResult.error) throw subjectResult.error;
+    subject = subjectResult.data;
+  }
+  const assignmentResult = await supabase.from("teacher_assignments").insert({ school_id: schoolResult.data.id, user_id: auth.user.id, class_id: classResult.data.id, subject_id: subject?.id || null, mode: form.role, is_homeroom: form.role === "wali_kelas" });
+  if (assignmentResult.error) throw assignmentResult.error;
+  return fetchRemoteData(auth.user);
 }
 
-function Task({ icon: Icon, title, meta, action, onClick }) {
-  return <div className="task-row"><div className="task-icon"><Icon size={18} /></div><div className="task-copy"><strong>{title}</strong><small>{meta}</small></div><button className="text-button" onClick={onClick}>{action}</button></div>;
+function SetupScreen({ auth, onComplete }) {
+  const metadata = auth.user.user_metadata || {};
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [form, setForm] = useState({ fullName: metadata.full_name || "", schoolName: metadata.school_name || "", role: metadata.role || "wali_kelas", className: "7A", subjectName: metadata.role === "guru_mapel" ? "Matematika" : "", academicYear: "2026/2027" });
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async (event) => {
+    event.preventDefault();
+    setError("");
+    if (!form.fullName || !form.schoolName || !form.className) return setError("Nama, sekolah, dan kelas wajib diisi.");
+    setBusy(true);
+    try { onComplete(await createWorkspace(form, auth)); } catch (err) { setError(err.message || "Ruang kerja belum dapat dibuat."); } finally { setBusy(false); }
+  };
+  return <div className="setup-screen"><div className="setup-card"><Logo /><div className="auth-heading"><p className="eyebrow">LANGKAH PERTAMA</p><h1>Siapkan ruang kerjamu</h1><p>Data awal boleh kosong. Di sini kamu menentukan konteks kelas agar presensi, nilai, dan jurnal tidak tercampur.</p></div>{error && <div className="form-notice error">{error}</div>}<form onSubmit={submit} className="setup-form"><Field label="Nama lengkap" value={form.fullName} onChange={(value) => update("fullName", value)} placeholder="Nama guru" /><Field label="Nama sekolah" value={form.schoolName} onChange={(value) => update("schoolName", value)} placeholder="Nama sekolah" /><div className="two-fields"><label className="field"><span>Peran</span><select value={form.role} onChange={(event) => update("role", event.target.value)}><option value="wali_kelas">Wali kelas</option><option value="guru_mapel">Guru mata pelajaran</option></select></label><Field label="Tahun ajaran" value={form.academicYear} onChange={(value) => update("academicYear", value)} placeholder="2026/2027" /></div><div className="two-fields"><Field label="Kelas pertama" value={form.className} onChange={(value) => update("className", value)} placeholder="7A" /><Field label="Mata pelajaran (opsional)" value={form.subjectName} onChange={(value) => update("subjectName", value)} placeholder="Matematika" /></div><button className="primary-button wide" disabled={busy}>{busy ? "Menyiapkan…" : "Masuk ke ruang kerja"}<ArrowRight size={17} /></button></form></div></div>;
 }
 
-function Assistant() {
-  const [messages, setMessages] = useState([]);
-  const [prompt, setPrompt] = useState("");
-  const [thinking, setThinking] = useState(false);
-  const suggestions = ["Ringkas jurnal saya hari ini", "Buatkan refleksi pembelajaran", "Analisis presensi kelas 7A", "Buat tindak lanjut siswa"];
+function Workspace({ auth, onLogout }) {
+  const [data, setData] = useState(emptyData);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [active, setActive] = useState("dashboard");
+  const [dark, setDark] = useState(() => window.localStorage.getItem("bb_dark") === "1");
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const [notice, setNotice] = useState(null);
 
-  const send = (value = prompt) => {
-    const text = value.trim();
-    if (!text || thinking) return;
-    setMessages(old => [...old, { role: "user", text }]);
-    setPrompt("");
-    setThinking(true);
-    setTimeout(() => {
-      setMessages(old => [...old, { role: "assistant", text: responseFor(text) }]);
-      setThinking(false);
-    }, 650);
+  const refresh = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const next = auth.mode === "local" ? (readJson(accountKey(auth.user), emptyData()) || emptyData()) : await fetchRemoteData(auth.user);
+      setData(next);
+    } catch (err) {
+      setError(err.message || "Data belum dapat dibaca.");
+    } finally { setLoading(false); }
   };
 
-  return <section className="assistant-shell"><div className="assistant-intro"><div className="ai-orb large"><Sparkles size={27} /></div><h2>Asisten Guru</h2><p>Tulis apa yang ingin kamu kerjakan. Saya akan membantu menyusun hasil yang rapi dan siap kamu periksa.</p></div><div className="chat-area">{messages.length === 0 && <div className="suggestions">{suggestions.map(item => <button key={item} className="suggestion" onClick={() => send(item)}><Sparkles size={15} /><span>{item}</span><ArrowUp size={14} /></button>)}</div>}{messages.map((item, index) => <div className={item.role === "user" ? "message user" : "message assistant"} key={index}><div className="message-label">{item.role === "user" ? "Kamu" : "Asisten Guru"}</div><div className="message-body">{item.text}</div>{item.role === "assistant" && <div className="message-actions"><button>Salin</button><button>Simpan ke jurnal</button><button>Perbaiki</button></div>}</div>)}{thinking && <div className="message assistant"><div className="message-label">Asisten Guru</div><div className="thinking"><span></span><span></span><span></span></div></div>}</div><div className="prompt-box"><textarea value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Tulis perintah untuk asisten guru..." rows="1" /><button className="send-button" onClick={() => send()} disabled={!prompt.trim() || thinking} aria-label="Kirim"><ArrowUp size={19} /></button><small>Tekan Enter untuk mengirim · AI membantu, guru tetap memeriksa hasilnya.</small></div></section>;
+  useEffect(() => { refresh(); }, [auth]);
+  useEffect(() => { window.localStorage.setItem("bb_dark", dark ? "1" : "0"); }, [dark]);
+
+  const completeSetup = (next) => { setData(next); setError(""); };
+  const commit = (next) => { setData(next); if (auth.mode === "local") writeJson(accountKey(auth.user), next); };
+  const notify = (type, message) => { setNotice({ type, message }); window.setTimeout(() => setNotice(null), 4500); };
+
+  const logout = async () => {
+    if (supabase) await supabase.auth.signOut();
+    window.localStorage.removeItem(SESSION_KEY);
+    onLogout();
+  };
+
+  if (loading) return <LoadingScreen />;
+  if (!data.profile.setupComplete) return <SetupScreen auth={auth} onComplete={completeSetup} />;
+
+  const handlers = {
+    addStudent: async (draft) => {
+      try {
+        if (auth.mode === "local") {
+          const next = { ...data, students: [...data.students, { ...draft, id: id("student"), active: true }] };
+          if (draft.class_name && !next.classes.some((item) => item.name.toLowerCase() === draft.class_name.toLowerCase())) next.classes = [...next.classes, { id: id("class"), name: draft.class_name, active: true }];
+          commit(next);
+        } else {
+          const result = await supabase.from("students").insert({ school_id: data.school.id, full_name: draft.full_name, nis: draft.nis || null, nisn: draft.nisn || null, gender: draft.gender || null, address: draft.address || null, parent_phone: draft.parent_phone || null, active: true }).select().single();
+          if (result.error) throw result.error;
+          await refresh();
+        }
+        notify("success", "Data siswa berhasil ditambahkan.");
+      } catch (err) { notify("error", err.message || "Siswa belum tersimpan."); }
+    },
+    importStudents: async (file) => {
+      try {
+        const rows = await readWorkbookRows(file, "TEMPLATE_SISWA");
+        let added = 0; let skipped = 0; const next = { ...data, students: [...data.students], classes: [...data.classes] };
+        const known = new Set(next.students.map((student) => text(student.nisn || student.full_name).toLowerCase()));
+        for (const row of rows) {
+          if (isExampleRow(row) || !text(row.full_name)) { skipped += 1; continue; }
+          const name = text(row.full_name); const nisn = text(row.nisn); const className = text(row.class_name || row.kelas);
+          if (!className || known.has((nisn || name).toLowerCase())) { skipped += 1; continue; }
+          next.students.push({ id: id("student"), full_name: name, nis: text(row.nis), nisn, gender: text(row.gender), address: text(row.address), parent_phone: text(row.parent_phone), class_name: className, active: text(row.active).toLowerCase() !== "false" });
+          known.add((nisn || name).toLowerCase()); added += 1;
+          if (!next.classes.some((item) => item.name.toLowerCase() === className.toLowerCase())) next.classes.push({ id: id("class"), name: className, active: true });
+        }
+        if (auth.mode === "local") commit(next); else { for (const student of next.students.slice(data.students.length)) { const result = await supabase.from("students").insert({ school_id: data.school.id, full_name: student.full_name, nis: student.nis || null, nisn: student.nisn || null, gender: student.gender || null, address: student.address || null, parent_phone: student.parent_phone || null, active: student.active }); if (result.error) skipped += 1; } await refresh(); }
+        notify("success", "Import siswa selesai: " + added + " ditambahkan, " + skipped + " dilewati.");
+      } catch (err) { notify("error", err.message || "File siswa belum dapat dibaca."); }
+    },
+    saveAttendance: async (date, statuses, classId) => {
+      const classRow = data.classes.find((item) => item.id === classId) || data.classes[0];
+      try {
+        if (auth.mode === "local") {
+          const kept = data.attendance.filter((item) => !(item.attendance_date === date && item.class_id === classRow?.id));
+          const records = data.students.map((student) => ({ id: id("attendance"), student_id: student.id, class_id: classRow?.id, attendance_date: date, status: statuses[student.id] || "H", note: "" }));
+          commit({ ...data, attendance: [...kept, ...records] });
+        } else {
+          await supabase.from("attendance_records").delete().eq("school_id", data.school.id).eq("class_id", classRow.id).eq("attendance_date", date).eq("recorded_by", auth.user.id);
+          const payload = data.students.map((student) => ({ school_id: data.school.id, class_id: classRow.id, subject_id: null, student_id: student.id, recorded_by: auth.user.id, attendance_date: date, status: statuses[student.id] || "H" }));
+          const result = await supabase.from("attendance_records").insert(payload); if (result.error) throw result.error; await refresh();
+        }
+        notify("success", "Presensi " + date + " berhasil disimpan.");
+      } catch (err) { notify("error", err.message || "Presensi belum tersimpan."); }
+    },
+    addJournal: async (draft) => {
+      try {
+        if (auth.mode === "local") commit({ ...data, journals: [{ ...draft, id: id("journal"), status: "complete" }, ...data.journals] });
+        else { const result = await supabase.from("teaching_journals").insert({ school_id: data.school.id, class_id: draft.class_id, subject_id: draft.subject_id || null, created_by: auth.user.id, journal_date: draft.journal_date, topic: draft.topic, activity: draft.activity, reflection: draft.reflection, status: "complete" }); if (result.error) throw result.error; await refresh(); }
+        notify("success", "Jurnal berhasil disimpan.");
+      } catch (err) { notify("error", err.message || "Jurnal belum tersimpan."); }
+    },
+    importGrades: async (file) => {
+      try {
+        const rows = await readWorkbookRows(file, "TEMPLATE_NILAI");
+        const result = await saveGradeRows(rows, data, auth, refresh, commit);
+        notify("success", "Import nilai selesai: " + result.added + " masuk, " + result.skipped + " dilewati.");
+      } catch (err) { notify("error", err.message || "File nilai belum dapat dibaca."); }
+    },
+    addGrade: async (draft) => {
+      try { const result = await saveGradeRows([draft], data, auth, refresh, commit); notify("success", result.added ? "Nilai berhasil disimpan." : "Baris nilai dilewati."); } catch (err) { notify("error", err.message || "Nilai belum tersimpan."); }
+    },
+  };
+
+  const page = active === "dashboard" ? <DashboardPage data={data} setActive={setActive} />
+    : active === "assistant" ? <AssistantPage data={data} />
+      : active === "students" ? <StudentsPage data={data} onAdd={handlers.addStudent} onImport={handlers.importStudents} />
+        : active === "attendance" ? <AttendancePage data={data} onSave={handlers.saveAttendance} />
+          : active === "journal" ? <JournalPage data={data} onAdd={handlers.addJournal} />
+            : active === "grades" ? <GradesPage data={data} onImport={handlers.importGrades} onAdd={handlers.addGrade} />
+              : active === "reports" ? <ReportsPage data={data} />
+                : <SettingsPage data={data} onLogout={logout} />;
+
+  return <div className={dark ? "app dark" : "app"}>
+    <aside className={mobileMenu ? "sidebar open" : "sidebar"}><div className="sidebar-header"><Logo /><button className="icon-button close-mobile" onClick={() => setMobileMenu(false)}><X size={18} /></button></div><div className="workspace-chip"><span className="workspace-symbol">{avatarName(data.classes[0]?.name || "BK")}</span><div><strong>{data.profile.schoolName || "Ruang kerja"}</strong><small>{roleLabel(data.profile.role)} · {data.classes.length} kelas</small></div></div><nav className="nav-list">{NAV_ITEMS.map((item) => { const Icon = item.icon; return <button key={item.id} className={active === item.id ? "nav-item active" : "nav-item"} onClick={() => { setActive(item.id); setMobileMenu(false); }}><Icon size={18} /><span>{item.label}</span>{item.id === "assistant" && <em>AI</em>}</button>; })}</nav><div className="sidebar-footer"><button className={active === "settings" ? "nav-item active" : "nav-item"} onClick={() => setActive("settings")}><Settings2 size={18} /><span>Pengaturan</span></button><button className="logout-button" onClick={logout}><LogOut size={16} /><span>Keluar</span></button></div></aside>
+    <main className="main"><header className="topbar"><button className="icon-button mobile-trigger" onClick={() => setMobileMenu(true)}><Menu size={19} /></button><div><span className="eyebrow">Buku Kerja Digital</span><h1>{NAV_ITEMS.find((item) => item.id === active)?.label || "Pengaturan"}</h1></div><div className="top-actions"><span className="connection-pill"><span></span>{auth.mode === "local" ? "Mode lokal" : "Database terhubung"}</span><button className="theme-button" onClick={() => setDark((current) => !current)}>{dark ? <Sun size={17} /> : <Moon size={17} />}</button><span className="top-avatar">{avatarName(data.profile.fullName)}</span></div></header><div className="content">{error && <div className="form-notice error page-notice">{error}</div>}{notice && <div className={"form-notice " + notice.type + " page-notice"}>{notice.message}</div>}{page}</div></main><nav className="mobile-nav">{NAV_ITEMS.slice(0, 5).map((item) => { const Icon = item.icon; return <button key={item.id} className={active === item.id ? "active" : ""} onClick={() => setActive(item.id)}><Icon size={18} /><span>{item.id === "assistant" ? "Asisten" : item.label.split(" ")[0]}</span></button>; })}</nav>
+  </div>;
 }
 
-function responseFor(prompt) {
-  if (prompt.toLowerCase().includes("presensi")) return "Saya dapat membantu membaca pola kehadiran kelas 7A. Dari data yang tersedia, fokus pertama adalah meninjau siswa dengan status izin atau alpa berulang, lalu mencatat tindak lanjut pada catatan siswa. Hubungkan data presensi terbaru agar saya dapat membuat rekap yang lebih spesifik.";
-  if (prompt.toLowerCase().includes("refleksi")) return "Refleksi Pembelajaran\n\nSebagian besar siswa mengikuti pembelajaran dengan baik. Beberapa siswa masih memerlukan contoh yang lebih konkret dan latihan bertahap agar dapat memahami materi secara mandiri.\n\nTindak lanjut\n\nGuru dapat memberikan pendampingan singkat, latihan bertingkat, dan pemeriksaan pemahaman sebelum melanjutkan ke materi berikutnya.";
-  return "Saya siap membantu menyusun pekerjaan tersebut. Pada versi terhubung, saya akan menggunakan kelas, mata pelajaran, jurnal, presensi, dan penilaian yang sedang kamu pilih. Kamu tetap dapat mengedit hasil sebelum menyimpannya.";
+async function saveGradeRows(rows, data, auth, refresh, commit) {
+  let added = 0; let skipped = 0;
+  const localGrades = [...data.grades];
+  const assessmentCache = {};
+  for (const raw of rows) {
+    const row = normalizeRow(raw);
+    if (isExampleRow(row)) { skipped += 1; continue; }
+    const studentNisn = text(row.student_nisn); const studentName = text(row.student_name); const className = text(row.class_name); const subjectName = text(row.subject_name); const title = text(row.assessment_title || row.title); const point = Number(text(row.point).replace(",", "."));
+    const student = data.students.find((item) => (studentNisn && text(item.nisn) === studentNisn) || (studentName && text(item.full_name).toLowerCase() === studentName.toLowerCase()));
+    if (!student || !className || !subjectName || !title || Number.isNaN(point)) { skipped += 1; continue; }
+    const grade = { id: id("grade"), student_id: student.id, student_nisn: student.nisn || studentNisn, student_name: student.full_name, class_name: className, subject_name: subjectName, academic_year: text(row.academic_year), semester: text(row.semester), assessment_title: title, assessment_category: text(row.assessment_category || "LAINNYA"), assessment_date: text(row.assessment_date) || today(), point, max_point: Number(text(row.max_point).replace(",", ".")) || 100, comment: text(row.comment) };
+    if (auth.mode === "local") { localGrades.push(grade); added += 1; continue; }
+    const classRow = data.classes.find((item) => text(item.name).toLowerCase() === className.toLowerCase());
+    const subjectRow = data.subjects.find((item) => text(item.name).toLowerCase() === subjectName.toLowerCase());
+    if (!classRow || !subjectRow) { skipped += 1; continue; }
+    const cacheKey = [classRow.id, subjectRow.id, title, grade.assessment_date].join("|");
+    let assessment = assessmentCache[cacheKey];
+    if (!assessment) {
+      const assessmentResult = await supabase.from("assessments").insert({ school_id: data.school.id, class_id: classRow.id, subject_id: subjectRow.id, created_by: auth.user.id, title, category: grade.assessment_category, max_point: grade.max_point, assessment_date: grade.assessment_date }).select().single();
+      if (assessmentResult.error) throw assessmentResult.error;
+      assessment = assessmentResult.data || null; assessmentCache[cacheKey] = assessment;
+    }
+    if (!assessment) { skipped += 1; continue; }
+    const scoreResult = await supabase.from("assessment_scores").upsert({ assessment_id: assessment.id, student_id: student.id, point, comment: grade.comment }, { onConflict: "assessment_id,student_id" });
+    if (scoreResult.error) throw scoreResult.error;
+    added += 1;
+  }
+  if (auth.mode === "local") commit({ ...data, grades: localGrades }); else await refresh();
+  return { added, skipped };
 }
 
-function Section({ eyebrow, title, action, children }) {
+function PageSection({ eyebrow, title, action, children }) {
   return <section className="page-section"><div className="section-head"><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></div>{action}</div>{children}</section>;
 }
 
-function Toolbar({ placeholder = "Cari..." }) {
-  return <div className="toolbar"><div className="search-box"><Search size={17} /><input placeholder={placeholder} /></div><button className="filter-button">Semua <ChevronDown size={15} /></button></div>;
+function DashboardPage({ data, setActive }) {
+  const todayAttendance = data.attendance.filter((item) => item.attendance_date === today());
+  const present = todayAttendance.filter((item) => item.status === "H").length;
+  const rate = data.students.length ? Math.round((present / data.students.length) * 100) : 0;
+  return <><section className="welcome-block"><div><p className="eyebrow">RUANG KERJA PRIBADI</p><h2>Selamat datang, {data.profile.fullName.split(" ")[0] || "Guru"}.</h2><p>Mulai dari data yang paling ingin kamu bereskan hari ini.</p></div><button className="primary-button" onClick={() => setActive("assistant")}><Sparkles size={17} /> Tanya Asisten Guru</button></section><div className="stat-grid"><Stat label="Siswa aktif" value={data.students.length} meta={data.classes.length + " kelas tercatat"} icon={Users} tone="purple" /><Stat label="Kehadiran hari ini" value={rate + "%"} meta={todayAttendance.length ? present + " hadir tercatat" : "Belum diisi"} icon={CalendarCheck2} tone="green" /><Stat label="Jurnal tersimpan" value={data.journals.length} meta="catatan pembelajaran" icon={BookOpen} tone="amber" /><Stat label="Nilai tersimpan" value={data.grades.length} meta="baris penilaian" icon={ClipboardList} tone="blue" /></div><div className="dashboard-grid"><div className="panel empty-panel"><div className="panel-icon"><FileSpreadsheet size={20} /></div><h3>{data.students.length ? "Data kelas sudah mulai terisi" : "Mulai dari data siswa"}</h3><p>{data.students.length ? "Lanjutkan dengan presensi, jurnal, atau penilaian agar rekap terbentuk otomatis." : "Unduh template, isi data siswa, lalu import. Kamu juga bisa menambah satu per satu."}</p><div className="button-row"><button className="primary-button" onClick={() => setActive("students")}><Users size={16} /> Kelola siswa</button><button className="secondary-button" onClick={() => setActive("assistant")}><Sparkles size={16} /> Minta bantuan</button></div></div><div className="panel ai-card"><div className="ai-orb"><Sparkles size={20} /></div><p className="eyebrow">ASISTEN GURU</p><h3>Tulis perintahmu dengan bahasa biasa.</h3><p>Contoh: “Buatkan refleksi pembelajaran dari jurnal hari ini.”</p><button className="ghost-light" onClick={() => setActive("assistant")}>Buka Asisten <ArrowRight size={16} /></button></div></div><div className="panel checklist"><div className="panel-head"><div><p className="eyebrow">ALUR KERJA</p><h3>Yang bisa dibereskan hari ini</h3></div></div><div className="checklist-grid"><QuickTask done={data.students.length > 0} title="Masukkan data siswa" desc="Import Excel atau tambah manual" onClick={() => setActive("students")} /><QuickTask done={data.attendance.some((item) => item.attendance_date === today())} title="Isi presensi" desc="Tandai H, S, I, atau A" onClick={() => setActive("attendance")} /><QuickTask done={data.journals.length > 0} title="Tulis jurnal" desc="Simpan catatan pembelajaran" onClick={() => setActive("journal")} /><QuickTask done={data.grades.length > 0} title="Rekap nilai" desc="Import atau input nilai" onClick={() => setActive("grades")} /></div></div></>;
 }
 
-function Students() {
-  return <Section eyebrow="DATA KELAS" title="Siswa" action={<button className="primary-button"><Plus size={17} /> Tambah siswa</button>}><Toolbar placeholder="Cari nama atau NIS..." /><div className="table-card">{students.concat([{ name: "Elang Wijaya", initials: "EW", status: "Hadir", score: 82, tone: "green" }]).map(s => <div className="student-row" key={s.name}><div className={"student-avatar " + s.tone}>{s.initials}</div><div className="student-name"><strong>{s.name}</strong><small>NIS · Kelas 7A</small></div><span className={"status " + s.tone}>{s.status}</span><button className="icon-button"><MoreHorizontal size={18} /></button></div>)}</div></Section>;
+function Stat({ label, value, meta, icon: Icon, tone }) { return <div className="stat-card"><div className={"stat-icon " + tone}><Icon size={18} /></div><div><span>{label}</span><strong>{value}</strong><small>{meta}</small></div></div>; }
+function QuickTask({ done, title, desc, onClick }) { return <button className="quick-task" onClick={onClick}><span className={done ? "task-check done" : "task-check"}>{done && <Check size={13} />}</span><span><strong>{title}</strong><small>{desc}</small></span><ArrowRight size={15} /></button>; }
+
+function AssistantPage({ data }) {
+  const [prompt, setPrompt] = useState(""); const [messages, setMessages] = useState([]); const [busy, setBusy] = useState(false);
+  const suggestions = ["Ringkas jurnal saya hari ini", "Buatkan refleksi pembelajaran", "Analisis presensi kelas", "Buat tindak lanjut siswa"];
+  const send = async (value = prompt) => { const question = text(value); if (!question || busy) return; setPrompt(""); setMessages((current) => [...current, { role: "user", text: question }]); setBusy(true); const answer = await askAssistant(question, data); setMessages((current) => [...current, { role: "assistant", text: answer }]); setBusy(false); };
+  return <section className="assistant-page"><div className="assistant-intro"><div className="ai-orb large"><Sparkles size={25} /></div><p className="eyebrow">ASISTEN GURU</p><h2>Beritahu apa yang ingin dibereskan.</h2><p>Asisten membantu menyusun hasil dari konteks ruang kerjamu. Guru tetap memeriksa dan mengedit sebelum menyimpan.</p></div><div className="chat-area">{messages.length === 0 && <div className="suggestion-grid">{suggestions.map((item) => <button className="suggestion" key={item} onClick={() => send(item)}><Sparkles size={15} /><span>{item}</span><ArrowRight size={14} /></button>)}</div>}{messages.map((message, index) => <div className={message.role === "user" ? "message user" : "message assistant"} key={index}><span className="message-label">{message.role === "user" ? "Kamu" : "Asisten Guru"}</span><div className="message-body">{message.text}</div></div>)}{busy && <div className="message assistant"><span className="message-label">Asisten Guru</span><div className="typing"><i></i><i></i><i></i></div></div>}</div><div className="prompt-box"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); send(); } }} placeholder="Tulis perintah untuk asisten guru…" rows="1" /><button className="send-button" disabled={!text(prompt) || busy} onClick={() => send()}><ArrowRight size={17} /></button><small>Enter untuk mengirim · output AI tanpa format dekoratif agar mudah diedit.</small></div></section>;
 }
 
-function Attendance() {
-  return <Section eyebrow="CATATAN KEHADIRAN" title="Presensi" action={<button className="primary-button"><Check size={17} /> Simpan presensi</button>}><div className="control-row"><button className="date-control">Kamis, 6 September 2026 <ChevronDown size={15} /></button><button className="filter-button">Kelas 7A <ChevronDown size={15} /></button></div><div className="attendance-summary"><div><strong>32</strong><span>Total siswa</span></div><div className="present"><strong>30</strong><span>Hadir</span></div><div className="sick"><strong>1</strong><span>Sakit/Izin</span></div><div className="absent"><strong>1</strong><span>Alpa</span></div></div><div className="table-card">{students.concat([{ name: "Elang Wijaya", initials: "EW", status: "Hadir", score: 82, tone: "green" }]).map(s => <div className="attendance-row" key={s.name}><div className={"student-avatar " + s.tone}>{s.initials}</div><div className="student-name"><strong>{s.name}</strong><small>7A · NIS 00{Math.floor(Math.random() * 90 + 10)}</small></div><div className="attendance-actions"><button className={s.status === "Hadir" ? "attendance active present" : "attendance present"}>H</button><button className={s.status === "Sakit" ? "attendance active sick" : "attendance sick"}>S</button><button className={s.status === "Izin" ? "attendance active permission" : "attendance permission"}>I</button><button className={s.status === "Alpa" ? "attendance active absent" : "attendance absent"}>A</button></div></div>)}</div></Section>;
+async function askAssistant(prompt, data) {
+  const key = window.localStorage.getItem(API_KEY);
+  if (key) {
+    try {
+      const context = "Konteks buku kerja: " + data.students.length + " siswa, " + data.classes.length + " kelas, " + data.journals.length + " jurnal, " + data.grades.length + " nilai. Jawab dalam Bahasa Indonesia, plain text, ringkas, tanpa markdown dekoratif. Perintah guru: " + prompt;
+      const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + encodeURIComponent(key), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: context }] }] }) });
+      const json = await response.json();
+      const output = json.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim();
+      if (output) return output;
+    } catch { /* fallback below */ }
+  }
+  const lower = prompt.toLowerCase();
+  if (lower.includes("presensi")) return "Data presensi yang bisa saya baca saat ini berjumlah " + data.attendance.length + " catatan. Untuk analisis yang lebih spesifik, isi presensi terlebih dahulu lalu minta saya merangkum pola hadir, izin, sakit, dan alpa.";
+  if (lower.includes("jurnal") || lower.includes("refleksi")) return "Belum ada cukup jurnal untuk dirangkum. Setelah kamu menyimpan jurnal pembelajaran, minta saya membuat refleksi, tindak lanjut, atau ringkasan untuk laporan.";
+  return "Saya siap membantu. Data ruang kerja saat ini berisi " + data.students.length + " siswa, " + data.classes.length + " kelas, dan " + data.grades.length + " nilai. Hubungkan API key di Pengaturan untuk jawaban AI yang lebih mendalam.";
 }
 
-function Journal() {
-  return <Section eyebrow="CATATAN PEMBELAJARAN" title="Jurnal mengajar" action={<button className="primary-button"><Plus size={17} /> Jurnal baru</button>}><div className="journal-feature"><div className="ai-orb"><Sparkles size={20} /></div><div><strong>Mulai dari catatan singkat</strong><p>Biarkan Asisten Guru membantu menyusun jurnal yang rapi.</p></div><button className="secondary-button">Buka Asisten AI</button></div><div className="journal-list">{["Pecahan dan perbandingan", "Operasi bilangan bulat", "Pengenalan aljabar"].map((title, i) => <div className="journal-card" key={title}><div><span className="date-chip">0{i + 4} SEP</span><strong>{title}</strong><small>Matematika · Kelas 7A</small></div><span className={i === 0 ? "status green" : "status amber"}>{i === 0 ? "Lengkap" : "Draft"}</span></div>)}</div></Section>;
+function ImportActions({ onImport, accept = ".xlsx,.xls,.csv" }) { const inputId = id("file"); return <div className="import-actions"><a className="secondary-button" href={TEMPLATE_URL} download><Download size={16} /> Unduh template</a><label className="primary-button file-button" htmlFor={inputId}><Upload size={16} /> Import file<input id={inputId} type="file" accept={accept} onChange={(event) => { const file = event.target.files?.[0]; if (file) onImport(file); event.target.value = ""; }} /></label></div>; }
+
+function StudentsPage({ data, onAdd, onImport }) {
+  const [showForm, setShowForm] = useState(false); const [query, setQuery] = useState(""); const [form, setForm] = useState({ full_name: "", nis: "", nisn: "", gender: "", address: "", parent_phone: "", class_name: data.classes[0]?.name || "" });
+  const visible = data.students.filter((item) => (text(item.full_name) + " " + text(item.nis) + " " + text(item.nisn)).toLowerCase().includes(query.toLowerCase()));
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async (event) => { event.preventDefault(); if (!form.full_name) return; await onAdd(form); setForm({ ...form, full_name: "", nis: "", nisn: "", address: "", parent_phone: "" }); setShowForm(false); };
+  return <PageSection eyebrow="DATA KELAS" title="Siswa" action={<div className="section-actions"><ImportActions onImport={onImport} /><button className="primary-button" onClick={() => setShowForm((current) => !current)}><Plus size={16} /> Tambah siswa</button></div>}><div className="helper-banner"><FileSpreadsheet size={18} /><span>Format import sudah disiapkan. Isi sheet TEMPLATE_SISWA, hapus baris contoh, lalu unggah kembali.</span></div>{showForm && <form className="inline-form" onSubmit={submit}><Field label="Nama lengkap" value={form.full_name} onChange={(value) => update("full_name", value)} placeholder="Nama siswa" /><Field label="NISN" value={form.nisn} onChange={(value) => update("nisn", value)} placeholder="Opsional" /><Field label="Kelas" value={form.class_name} onChange={(value) => update("class_name", value)} placeholder="7A" /><label className="field"><span>Jenis kelamin</span><select value={form.gender} onChange={(event) => update("gender", event.target.value)}><option value="">Pilih</option><option value="L">L</option><option value="P">P</option></select></label><button className="primary-button"><Save size={15} /> Simpan</button></form>}<div className="toolbar"><div className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari nama, NIS, atau NISN…" /></div><span className="result-count">{visible.length} siswa</span></div><div className="table-card">{visible.length === 0 ? <EmptyState title="Belum ada data siswa" desc="Tambahkan manual atau import template untuk memulai." /> : visible.map((student) => <div className="data-row" key={student.id}><span className="person-avatar">{avatarName(student.full_name)}</span><div className="person-copy"><strong>{student.full_name}</strong><small>{student.nisn || "NISN belum diisi"} · {data.classes[0]?.name || "Kelas belum dipilih"}</small></div><span className="row-meta">{student.gender || "-"}</span><span className="row-meta">{student.active === false ? "Nonaktif" : "Aktif"}</span></div>)}</div></PageSection>;
 }
 
-function Grades() {
-  return <Section eyebrow="HASIL BELAJAR" title="Penilaian" action={<button className="primary-button"><Plus size={17} /> Penilaian baru</button>}><div className="grade-highlight"><div><p className="eyebrow">MATEMATIKA · KELAS 7A</p><strong>84,2</strong><span>Rata-rata kelas</span></div><div className="grade-bar"><span style={{width:"84%"}}></span></div><small>84% nilai sudah terisi</small></div><div className="table-card">{students.map(s => <div className="student-row" key={s.name}><div className={"student-avatar " + s.tone}>{s.initials}</div><div className="student-name"><strong>{s.name}</strong><small>Penilaian: Tugas Pecahan</small></div><span className="grade-number">{s.score}</span><button className="icon-button"><MoreHorizontal size={18} /></button></div>)}</div></Section>;
+function AttendancePage({ data, onSave }) {
+  const [date, setDate] = useState(today()); const [classId, setClassId] = useState(data.classes[0]?.id || ""); const [statuses, setStatuses] = useState({});
+  useEffect(() => { const next = {}; data.students.forEach((student) => { const record = data.attendance.find((item) => item.student_id === student.id && item.attendance_date === date && (!classId || item.class_id === classId)); next[student.id] = record?.status || "H"; }); setStatuses(next); }, [date, classId, data.students, data.attendance]);
+  const counts = Object.values(statuses).reduce((result, value) => ({ ...result, [value]: (result[value] || 0) + 1 }), {});
+  return <PageSection eyebrow="CATATAN KEHADIRAN" title="Presensi" action={<button className="primary-button" onClick={() => onSave(date, statuses, classId)}><Save size={16} /> Simpan presensi</button>}><div className="control-row"><label className="compact-field"><span>Tanggal</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label className="compact-field"><span>Kelas</span><select value={classId} onChange={(event) => setClassId(event.target.value)}>{data.classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div><div className="attendance-summary"><div><strong>{data.students.length}</strong><span>Total siswa</span></div><div className="present"><strong>{counts.H || 0}</strong><span>Hadir</span></div><div className="permission"><strong>{(counts.S || 0) + (counts.I || 0)}</strong><span>Sakit / izin</span></div><div className="absent"><strong>{counts.A || 0}</strong><span>Alpa</span></div></div><div className="table-card">{data.students.length === 0 ? <EmptyState title="Belum ada siswa" desc="Isi data siswa sebelum membuat presensi." /> : data.students.map((student) => <div className="data-row attendance-row" key={student.id}><span className="person-avatar">{avatarName(student.full_name)}</span><div className="person-copy"><strong>{student.full_name}</strong><small>{student.nisn || "NISN belum diisi"}</small></div><div className="attendance-actions">{[["H", "Hadir"], ["S", "Sakit"], ["I", "Izin"], ["A", "Alpa"]].map(([code, label]) => <button key={code} title={label} className={statuses[student.id] === code ? "attendance-button active " + code : "attendance-button"} onClick={() => setStatuses((current) => ({ ...current, [student.id]: code }))}>{code}</button>)}</div></div>)}</div></PageSection>;
 }
 
-function Reports() {
-  return <Section eyebrow="RINGKASAN DATA" title="Rekap & laporan" action={<button className="secondary-button"><FileText size={17} /> Export laporan</button>}><div className="report-grid"><ReportCard title="Rekap presensi" desc="Kehadiran siswa per bulan dan semester" icon={CalendarCheck2} /><ReportCard title="Rekap penilaian" desc="Nilai per kelas dan mata pelajaran" icon={ClipboardList} /><ReportCard title="Laporan wali kelas" desc="Ringkasan perkembangan kelas" icon={GraduationCap} /><ReportCard title="Jurnal mengajar" desc="Daftar jurnal lengkap dan draft" icon={BookOpen} /></div></Section>;
+function JournalPage({ data, onAdd }) {
+  const [form, setForm] = useState({ journal_date: today(), class_id: data.classes[0]?.id || "", subject_id: data.subjects[0]?.id || "", topic: "", activity: "", reflection: "" });
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async (event) => { event.preventDefault(); if (!form.topic) return; await onAdd(form); setForm((current) => ({ ...current, topic: "", activity: "", reflection: "" })); };
+  return <PageSection eyebrow="CATATAN PEMBELAJARAN" title="Jurnal mengajar" action={<button className="secondary-button" onClick={() => document.getElementById("journal-topic")?.focus()}><Plus size={16} /> Tulis jurnal</button>}><form className="journal-form" onSubmit={submit}><div className="two-fields"><label className="field"><span>Tanggal</span><input type="date" value={form.journal_date} onChange={(event) => update("journal_date", event.target.value)} /></label><label className="field"><span>Kelas</span><select value={form.class_id} onChange={(event) => update("class_id", event.target.value)}>{data.classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div><label className="field"><span>Topik pembelajaran</span><input id="journal-topic" value={form.topic} onChange={(event) => update("topic", event.target.value)} placeholder="Contoh: Pecahan dan perbandingan" /></label><label className="field"><span>Aktivitas pembelajaran</span><textarea value={form.activity} onChange={(event) => update("activity", event.target.value)} placeholder="Apa yang dilakukan siswa dan guru?" rows="3" /></label><label className="field"><span>Refleksi dan tindak lanjut</span><textarea value={form.reflection} onChange={(event) => update("reflection", event.target.value)} placeholder="Apa yang perlu diperbaiki atau dilanjutkan?" rows="3" /></label><button className="primary-button" type="submit"><Save size={16} /> Simpan jurnal</button></form><div className="list-heading"><p className="eyebrow">RIWAYAT JURNAL</p><span>{data.journals.length} catatan</span></div><div className="journal-list">{data.journals.length === 0 ? <EmptyState title="Belum ada jurnal" desc="Simpan catatan pertama untuk membangun rekap pembelajaran." /> : data.journals.map((journal) => <div className="journal-card" key={journal.id}><span className="date-block">{text(journal.journal_date).slice(5)}</span><div className="person-copy"><strong>{journal.topic}</strong><small>{data.classes.find((item) => item.id === journal.class_id)?.name || "Kelas"} · {journal.status || "complete"}</small></div></div>)}</div></PageSection>;
 }
 
-function ReportCard({ title, desc, icon: Icon }) {
-  return <div className="report-card"><div className="report-icon"><Icon size={19} /></div><strong>{title}</strong><p>{desc}</p><button className="text-button">Buka laporan <ArrowUp size={15} /></button></div>;
+function GradesPage({ data, onImport, onAdd }) {
+  const [showForm, setShowForm] = useState(false); const [form, setForm] = useState({ student_nisn: "", student_name: "", class_name: data.classes[0]?.name || "", subject_name: data.subjects[0]?.name || "", assessment_title: "", assessment_category: "TUGAS", assessment_date: today(), point: "", max_point: "100", comment: "" });
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async (event) => { event.preventDefault(); await onAdd(form); setShowForm(false); };
+  return <PageSection eyebrow="HASIL BELAJAR" title="Penilaian" action={<div className="section-actions"><ImportActions onImport={onImport} /><button className="primary-button" onClick={() => setShowForm((current) => !current)}><Plus size={16} /> Input nilai</button></div>}><div className="helper-banner"><ClipboardList size={18} /><span>Nilai bisa diimpor untuk banyak kelas dan mata pelajaran. Gunakan NISN agar pencocokan siswa akurat.</span></div>{showForm && <form className="inline-form grades-form" onSubmit={submit}><Field label="NISN siswa" value={form.student_nisn} onChange={(value) => update("student_nisn", value)} placeholder="Disarankan" /><Field label="Nama siswa" value={form.student_name} onChange={(value) => update("student_name", value)} placeholder="Jika tanpa NISN" /><Field label="Kelas" value={form.class_name} onChange={(value) => update("class_name", value)} placeholder="7A" /><Field label="Mata pelajaran" value={form.subject_name} onChange={(value) => update("subject_name", value)} placeholder="Matematika" /><Field label="Judul penilaian" value={form.assessment_title} onChange={(value) => update("assessment_title", value)} placeholder="Tugas 1" /><Field label="Nilai" value={form.point} onChange={(value) => update("point", value)} placeholder="0-100" /><button className="primary-button"><Save size={15} /> Simpan</button></form>}<div className="grade-summary"><strong>{data.grades.length}</strong><span>baris nilai tersimpan</span><div className="grade-progress"><span style={{ width: data.students.length ? Math.min(100, Math.round((data.grades.length / Math.max(1, data.students.length)) * 100)) + "%" : "0%" }}></span></div></div><div className="table-card">{data.grades.length === 0 ? <EmptyState title="Belum ada nilai" desc="Import template nilai atau input satu nilai untuk memulai." /> : data.grades.map((grade) => <div className="data-row" key={grade.id}><span className="person-avatar blue">{avatarName(grade.student_name)}</span><div className="person-copy"><strong>{grade.student_name}</strong><small>{grade.class_name} · {grade.subject_name} · {grade.assessment_title}</small></div><strong className="score-value">{grade.point}</strong><span className="row-meta">/{grade.max_point || 100}</span></div>)}</div></PageSection>;
 }
 
-function Settings() {
-  return <Section eyebrow="PENGATURAN" title="Pengaturan aplikasi"><div className="settings-card"><div className="settings-row"><div><strong>API key pribadi</strong><p>Gunakan API key sendiri jika diperlukan untuk Asisten Guru.</p></div><button className="secondary-button">Atur API key</button></div><div className="settings-row"><div><strong>Profil dan ruang kerja</strong><p>Kelola peran wali kelas, kelas, dan mata pelajaran.</p></div><button className="secondary-button">Kelola</button></div><div className="settings-row"><div><strong>Data dan backup</strong><p>Import Excel atau unduh salinan data kerja.</p></div><button className="secondary-button">Buka</button></div></div></Section>;
+function ReportsPage({ data }) {
+  const attendanceRows = data.attendance.map((row) => ({ tanggal: row.attendance_date, siswa: data.students.find((item) => item.id === row.student_id)?.full_name || "", status: row.status, kelas: data.classes.find((item) => item.id === row.class_id)?.name || "" }));
+  return <PageSection eyebrow="RINGKASAN DATA" title="Rekap & laporan" action={<button className="secondary-button" onClick={() => saveRowsAsCsv("rekap-buku-kerja.csv", attendanceRows)}><Download size={16} /> Export CSV</button>}><div className="report-grid"><ReportCard icon={CalendarCheck2} title="Rekap presensi" value={data.attendance.length + " catatan"} desc="Unduh data presensi untuk direkap lebih lanjut." onClick={() => saveRowsAsCsv("rekap-presensi.csv", attendanceRows)} /><ReportCard icon={ClipboardList} title="Rekap penilaian" value={data.grades.length + " nilai"} desc="Daftar nilai yang sudah masuk ke ruang kerja." onClick={() => saveRowsAsCsv("rekap-nilai.csv", data.grades)} /><ReportCard icon={GraduationCap} title="Cakupan kelas" value={data.classes.length + " kelas"} desc="Kelas yang tersedia di ruang kerja ini." /><ReportCard icon={BookOpen} title="Jurnal mengajar" value={data.journals.length + " catatan"} desc="Jurnal yang tersimpan dan siap diperiksa." /></div></PageSection>;
+}
+function ReportCard({ icon: Icon, title, value, desc, onClick }) { return <div className="report-card"><div className="report-icon"><Icon size={19} /></div><strong>{title}</strong><b>{value}</b><p>{desc}</p>{onClick && <button className="text-button" onClick={onClick}>Unduh data <Download size={14} /></button>}</div>; }
+
+function SettingsPage({ data, onLogout }) {
+  const [key, setKey] = useState(() => window.localStorage.getItem(API_KEY) || ""); const [saved, setSaved] = useState(false);
+  const save = () => { window.localStorage.setItem(API_KEY, key.trim()); setSaved(true); window.setTimeout(() => setSaved(false), 2500); };
+  return <PageSection eyebrow="PENGATURAN" title="Pengaturan"><div className="settings-stack"><div className="settings-card"><div><p className="eyebrow">PROFIL</p><h3>{data.profile.fullName}</h3><p>{data.profile.schoolName} · {roleLabel(data.profile.role)}</p></div><span className="connection-pill"><span></span>{isSupabaseConfigured ? "Supabase aktif" : "Mode lokal"}</span></div><div className="settings-card"><div><p className="eyebrow">ASISTEN AI</p><h3>API key pribadi</h3><p>Disimpan di browser ini untuk pengujian. Untuk penjualan skala banyak, pindahkan pemanggilan AI ke server/Edge Function.</p></div><div className="key-row"><input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="Masukkan API key Gemini" /><button className="primary-button" onClick={save}><Save size={15} /> Simpan</button></div>{saved && <small className="saved-label">API key tersimpan di perangkat ini.</small>}</div><div className="settings-card"><div><p className="eyebrow">DATA</p><h3>Template import</h3><p>Unduh format resmi untuk siswa, nilai, dan presensi.</p></div><a className="secondary-button" href={TEMPLATE_URL} download><Download size={16} /> Unduh template</a></div><div className="settings-card danger-card"><div><h3>Keluar dari aplikasi</h3><p>Sesi di perangkat ini akan dihapus.</p></div><button className="secondary-button" onClick={onLogout}><LogOut size={16} /> Keluar</button></div></div></PageSection>;
 }
 
-export default App;
+function EmptyState({ title, desc }) { return <div className="empty-state"><div className="empty-icon"><FileText size={20} /></div><strong>{title}</strong><p>{desc}</p></div>; }
 
 class AppErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false };
-  }
-  static getDerivedStateFromError() {
-    return { hasError: true };
-  }
-  render() {
-    if (this.state.hasError) {
-      return <div className="app-error"><div className="app-error-card"><div className="app-error-mark">!</div><h1>Aplikasi belum dapat dimuat</h1><p>Segarkan halaman untuk mencoba lagi. Jika masalah berlanjut, periksa konfigurasi deployment.</p><button onClick={() => window.location.reload()}>Segarkan halaman</button></div></div>;
-    }
-    return this.props.children;
-  }
+  constructor(props) { super(props); this.state = { hasError: false }; }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() { if (this.state.hasError) return <div className="app-error"><div className="app-error-card"><div className="app-error-mark">!</div><h1>Aplikasi belum dapat dimuat</h1><p>Segarkan halaman. Jika masalah berlanjut, periksa konfigurasi deployment.</p><button onClick={() => window.location.reload()}>Segarkan halaman</button></div></div>; return this.props.children; }
 }
 
 createRoot(document.getElementById("root")).render(<AppErrorBoundary><App /></AppErrorBoundary>);
