@@ -10,6 +10,8 @@ import {
   ChevronDown,
   ClipboardList,
   Download,
+  Eye,
+  EyeOff,
   FileSpreadsheet,
   FileText,
   GraduationCap,
@@ -21,6 +23,7 @@ import {
   Save,
   Search,
   Settings2,
+  ShieldCheck,
   Sparkles,
   Sun,
   Upload,
@@ -56,6 +59,18 @@ const emptyData = () => ({
   attendance: [],
   journals: [],
   grades: [],
+});
+
+const previewData = () => ({
+  profile: { fullName: "Rina Wulandari", schoolName: "SMP Negeri 1", role: "wali_kelas", setupComplete: true },
+  school: { id: "school-preview", name: "SMP Negeri 1" },
+  academicYears: [{ id: "year-preview", label: "2026/2027", semester: "ganjil", active: true }],
+  classes: [{ id: "class-7a", name: "7A", active: true }],
+  subjects: [{ id: "subject-math", name: "Matematika" }],
+  students: Array.from({ length: 32 }, (_, index) => ({ id: `student-${index + 1}`, full_name: ["Alya Putri", "Bagas Pratama", "Citra Lestari", "Dimas Saputra"][index % 4] + ` ${index + 1}`, nisn: `0098765${String(index + 1).padStart(3, "0")}`, gender: index % 2 ? "L" : "P", class_id: "class-7a", class_name: "7A", active: true })),
+  attendance: Array.from({ length: 30 }, (_, index) => ({ id: `attendance-${index}`, student_id: `student-${index + 1}`, class_id: "class-7a", attendance_date: today(), status: index === 28 ? "I" : index === 29 ? "S" : "H" })),
+  journals: Array.from({ length: 6 }, (_, index) => ({ id: `journal-${index}`, journal_date: today(), class_id: "class-7a", subject_id: "subject-math", topic: ["Pecahan dan perbandingan", "Persamaan linear", "Bangun ruang"][index % 3], activity: "Diskusi kelompok dan latihan terarah", reflection: "Sebagian besar siswa memahami materi.", status: "complete" })),
+  grades: Array.from({ length: 32 }, (_, index) => ({ id: `grade-${index}`, student_id: `student-${index + 1}`, student_name: `Siswa ${index + 1}`, class_name: "7A", subject_name: "Matematika", assessment_title: "Asesmen Harian", assessment_date: today(), point: 72 + (index % 24), max_point: 100 })),
 });
 
 function id(prefix) {
@@ -136,8 +151,9 @@ function saveRowsAsCsv(filename, rows) {
 
 function Logo() {
   return (
-    <div className="brand-logo-wrap">
-      <img src="/brand/bantu-beres.png" alt="Bantu Beres" className="brand-logo" />
+    <div className="brand-lockup" aria-label="Bantu Beres Buku Kerja Digital">
+      <img src="/brand/bantu-beres-symbol.png" alt="" className="brand-symbol-img" />
+      <span className="brand-copy"><strong>Bantu<span>Beres</span></strong><small>BUKU KERJA DIGITAL</small></span>
     </div>
   );
 }
@@ -145,41 +161,42 @@ function Logo() {
 function App() {
   const [auth, setAuth] = useState(null);
   const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
+  const visualPreview = import.meta.env.DEV && new URLSearchParams(window.location.search).get("preview") === "dashboard";
 
   useEffect(() => {
-    if (!supabase) {
-      const localUser = readJson(SESSION_KEY);
-      if (localUser) setAuth({ mode: "local", user: localUser });
-      return;
+    if (visualPreview) {
+      setAuth({ mode: "preview", user: { id: "preview-teacher", email: "guru@sekolah.id", user_metadata: { full_name: "Rina Wulandari", school_name: "SMP Negeri 1", role: "wali_kelas" } } });
+      setAuthReady(true);
+      return undefined;
     }
+    if (!supabase) return undefined;
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      setAuth(data.session ? { mode: "supabase", user: data.session.user } : null);
+      setAuth(data.session ? { mode: "supabase", user: data.session.user, accessToken: data.session.access_token } : null);
       setAuthReady(true);
     });
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setAuth(session ? { mode: "supabase", user: session.user } : null);
+      setAuth(session ? { mode: "supabase", user: session.user, accessToken: session.access_token } : null);
     });
     return () => {
       mounted = false;
       listener.subscription.unsubscribe();
     };
-  }, []);
+  }, [visualPreview]);
 
   if (!authReady) return <LoadingScreen />;
-  if (!auth) return <AuthScreen onAuth={setAuth} />;
+  if (!auth) return <AuthScreen onAuth={setAuth} configurationPending={!isSupabaseConfigured} />;
   return <Workspace auth={auth} onLogout={() => setAuth(null)} />;
 }
 
-function LoadingScreen() {
-  return <div className="loading-screen"><Logo /><span>Memuat ruang kerja…</span></div>;
-}
+function LoadingScreen() { return <div className="loading-screen"><Logo /><span className="boot-line"></span><p>Menyiapkan ruang kerja guru…</p></div>; }
 
-function AuthScreen({ onAuth }) {
+function AuthScreen({ onAuth, configurationPending = false }) {
   const [mode, setMode] = useState("login");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [showPassword, setShowPassword] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", password: "", school: "", role: "wali_kelas" });
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
@@ -192,28 +209,11 @@ function AuthScreen({ onAuth }) {
     }
     setBusy(true);
     try {
-      if (!supabase) {
-        const accounts = readJson(ACCOUNTS_KEY, {});
-        const email = form.email.toLowerCase().trim();
-        if (mode === "register") {
-          if (accounts[email]) throw new Error("Email tersebut sudah terdaftar di mode uji lokal.");
-          const account = { id: id("local"), email, password: form.password, name: form.name, school: form.school, role: form.role };
-          accounts[email] = account;
-          writeJson(ACCOUNTS_KEY, accounts);
-          const user = { id: account.id, email: account.email, user_metadata: { full_name: account.name, school_name: account.school, role: account.role } };
-          writeJson(SESSION_KEY, user);
-          onAuth({ mode: "local", user });
-        } else {
-          const account = accounts[email];
-          if (!account || account.password !== form.password) throw new Error("Email atau kata sandi mode uji lokal tidak cocok.");
-          const user = { id: account.id, email: account.email, user_metadata: { full_name: account.name, school_name: account.school, role: account.role } };
-          writeJson(SESSION_KEY, user);
-          onAuth({ mode: "local", user });
-        }
-      } else if (mode === "login") {
+      if (!supabase || configurationPending) throw new Error("Database khusus Buku Kerja Digital belum dapat dibuat karena batas project Supabase akun saat ini. Tidak ada data yang diarahkan ke project lain.");
+      if (mode === "login") {
         const { data, error } = await supabase.auth.signInWithPassword({ email: form.email, password: form.password });
         if (error) throw error;
-        onAuth({ mode: "supabase", user: data.user });
+        onAuth({ mode: "supabase", user: data.user, accessToken: data.session?.access_token });
       } else {
         const { data, error } = await supabase.auth.signUp({
           email: form.email,
@@ -221,7 +221,7 @@ function AuthScreen({ onAuth }) {
           options: { data: { full_name: form.name, school_name: form.school, role: form.role } },
         });
         if (error) throw error;
-        if (data.session) onAuth({ mode: "supabase", user: data.user });
+        if (data.session) onAuth({ mode: "supabase", user: data.user, accessToken: data.session.access_token });
         else setNotice({ type: "success", message: "Akun berhasil dibuat. Periksa email untuk mengaktifkan akun, lalu masuk." });
       }
     } catch (error) {
@@ -233,20 +233,26 @@ function AuthScreen({ onAuth }) {
 
   return (
     <div className="auth-screen">
-      <div className="auth-brand"><Logo /><span>Buku kerja digital yang membantu guru menyelesaikan pekerjaan administrasi dengan lebih tenang.</span></div>
-      <div className="auth-card">
+      <div className="auth-ambient ambient-one"></div><div className="auth-ambient ambient-two"></div>
+      <section className="auth-story">
+        <Logo />
+        <div className="auth-story-copy"><p className="eyebrow"><span></span>RUANG KERJA KHUSUS GURU</p><h1>Catatan kelas rapi.<br/><span>Mengajar jadi lebih fokus.</span></h1><p>Siswa, presensi, jurnal, nilai, dan bantuan AI hadir dalam satu ruang kerja yang tenang dan mudah dipakai.</p></div>
+        <div className="auth-preview-card"><div className="preview-top"><span className="preview-logo"><img src="/brand/bantu-beres-symbol.png" alt="" /></span><span>Hari ini</span></div><strong>Apa yang ingin dibereskan?</strong><div className="preview-command"><Sparkles size={16}/><span>Ringkas jurnal dan siapkan tindak lanjut…</span></div><div className="preview-metrics"><span><b>32</b>Siswa</span><span><b>94%</b>Hadir</span><span><b>6</b>Jurnal</span></div></div>
+        <div className="auth-trust"><span><ShieldCheck size={16}/> Data per akun</span><span><FileSpreadsheet size={16}/> Import Excel</span><span><Sparkles size={16}/> Asisten AI</span></div>
+      </section>
+      <section className="auth-panel"><div className="auth-mobile-brand"><Logo /></div><div className="auth-card">
         <div className="auth-heading"><p className="eyebrow">{mode === "login" ? "SELAMAT DATANG KEMBALI" : "MULAI RUANG KERJA"}</p><h1>{mode === "login" ? "Masuk ke Bantu Beres" : "Buat akun guru"}</h1><p>{mode === "login" ? "Lanjutkan pekerjaan kelasmu dari tempat terakhir." : "Siapkan ruang kerja pribadi untuk kelas dan mata pelajaranmu."}</p></div>
-        {!isSupabaseConfigured && <div className="setup-notice"><span>Mode uji lokal</span><small>Supabase belum dihubungkan. Data tersimpan di browser ini sampai database terpisah diaktifkan.</small></div>}
+        {configurationPending && <div className="setup-notice"><ShieldCheck size={18}/><span><strong>Database khusus sedang menunggu slot</strong><small>Login akan aktif setelah project Supabase baru tersedia. Data tidak memakai database aplikasi lain.</small></span></div>}
         {notice && <div className={"form-notice " + notice.type}>{notice.message}</div>}
         <div className="auth-tabs"><button className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setNotice(null); }}>Masuk</button><button className={mode === "register" ? "active" : ""} onClick={() => { setMode("register"); setNotice(null); }}>Daftar</button></div>
         <form onSubmit={submit} className="auth-form">
           {mode === "register" && <><Field label="Nama lengkap" value={form.name} onChange={(value) => update("name", value)} placeholder="Contoh: Rina Wulandari" /><Field label="Nama sekolah" value={form.school} onChange={(value) => update("school", value)} placeholder="Contoh: SMP Negeri 1" /><label className="field"><span>Peran utama</span><select value={form.role} onChange={(event) => update("role", event.target.value)}><option value="wali_kelas">Wali kelas</option><option value="guru_mapel">Guru mata pelajaran</option></select></label></>}
           <Field label="Email" value={form.email} onChange={(value) => update("email", value)} placeholder="nama@sekolah.sch.id" type="email" />
-          <Field label="Kata sandi" value={form.password} onChange={(value) => update("password", value)} placeholder="Minimal 6 karakter" type="password" />
+          <label className="field"><span>Kata sandi</span><div className="password-field"><input type={showPassword ? "text" : "password"} value={form.password} onChange={(event) => update("password", event.target.value)} placeholder="Minimal 6 karakter"/><button type="button" aria-label={showPassword ? "Sembunyikan kata sandi" : "Tampilkan kata sandi"} onClick={() => setShowPassword((current) => !current)}>{showPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div></label>
           <button className="primary-button wide" disabled={busy}>{busy ? "Memproses…" : mode === "login" ? "Masuk ke ruang kerja" : "Buat akun"}<ArrowRight size={17} /></button>
         </form>
         <p className="auth-footnote">Dengan melanjutkan, kamu tetap menjadi pemeriksa akhir untuk semua catatan, nilai, dan rekomendasi AI.</p>
-      </div>
+      </div></section>
     </div>
   );
 }
@@ -301,7 +307,7 @@ async function fetchRemoteData(user) {
 }
 
 async function createWorkspace(form, auth) {
-  if (auth.mode === "local") {
+  if (auth.mode === "preview") {
     const data = emptyData();
     data.profile = { fullName: form.fullName, schoolName: form.schoolName, role: form.role, setupComplete: true };
     data.classes = [{ id: id("class"), name: form.className, grade_level: form.className.replace(/[^0-9]/g, ""), active: true }];
@@ -355,7 +361,7 @@ function Workspace({ auth, onLogout }) {
     setLoading(true);
     setError("");
     try {
-      const next = auth.mode === "local" ? (readJson(accountKey(auth.user), emptyData()) || emptyData()) : await fetchRemoteData(auth.user);
+      const next = auth.mode === "preview" ? previewData() : await fetchRemoteData(auth.user);
       setData(next);
     } catch (err) {
       setError(err.message || "Data belum dapat dibaca.");
@@ -366,7 +372,7 @@ function Workspace({ auth, onLogout }) {
   useEffect(() => { window.localStorage.setItem("bb_dark", dark ? "1" : "0"); }, [dark]);
 
   const completeSetup = (next) => { setData(next); setError(""); };
-  const commit = (next) => { setData(next); if (auth.mode === "local") writeJson(accountKey(auth.user), next); };
+  const commit = (next) => { setData(next); if (auth.mode === "preview") writeJson(accountKey(auth.user), next); };
   const notify = (type, message) => { setNotice({ type, message }); window.setTimeout(() => setNotice(null), 4500); };
 
   const logout = async () => {
@@ -381,7 +387,7 @@ function Workspace({ auth, onLogout }) {
   const handlers = {
     addStudent: async (draft) => {
       try {
-        if (auth.mode === "local") {
+        if (auth.mode === "preview") {
           const next = { ...data, students: [...data.students], classes: [...data.classes] };
           let classRow = next.classes.find((item) => item.name.toLowerCase() === text(draft.class_name).toLowerCase());
           if (draft.class_name && !classRow) { classRow = { id: id("class"), name: draft.class_name, active: true }; next.classes.push(classRow); }
@@ -402,7 +408,7 @@ function Workspace({ auth, onLogout }) {
       try {
         const rows = await readWorkbookRows(file, "TEMPLATE_SISWA");
         let added = 0; let skipped = 0;
-        if (auth.mode === "local") {
+        if (auth.mode === "preview") {
           const next = { ...data, students: [...data.students], classes: [...data.classes] };
           const known = new Set(next.students.map((student) => text(student.nisn || student.full_name).toLowerCase()));
           for (const row of rows) {
@@ -444,7 +450,7 @@ function Workspace({ auth, onLogout }) {
       const className = text(classRow?.name).toLowerCase();
       const roster = data.students.filter((student) => !classRow || student.class_id === classRow.id || text(student.class_name).toLowerCase() === className || (data.classes.length === 1 && !student.class_id && !student.class_name));
       try {
-        if (auth.mode === "local") {
+        if (auth.mode === "preview") {
           const kept = data.attendance.filter((item) => !(item.attendance_date === date && item.class_id === classRow?.id));
           const records = roster.map((student) => ({ id: id("attendance"), student_id: student.id, class_id: classRow?.id, attendance_date: date, status: statuses[student.id] || "H", note: "" }));
           commit({ ...data, attendance: [...kept, ...records] });
@@ -458,7 +464,7 @@ function Workspace({ auth, onLogout }) {
     },
     addJournal: async (draft) => {
       try {
-        if (auth.mode === "local") commit({ ...data, journals: [{ ...draft, id: id("journal"), status: "complete" }, ...data.journals] });
+        if (auth.mode === "preview") commit({ ...data, journals: [{ ...draft, id: id("journal"), status: "complete" }, ...data.journals] });
         else { const result = await supabase.from("teaching_journals").insert({ school_id: data.school.id, class_id: draft.class_id, subject_id: draft.subject_id || null, created_by: auth.user.id, journal_date: draft.journal_date, topic: draft.topic, activity: draft.activity, reflection: draft.reflection, status: "complete" }); if (result.error) throw result.error; await refresh(); }
         notify("success", "Jurnal berhasil disimpan.");
       } catch (err) { notify("error", err.message || "Jurnal belum tersimpan."); }
@@ -486,7 +492,7 @@ function Workspace({ auth, onLogout }) {
 
   return <div className={dark ? "app dark" : "app"}>
     <aside className={mobileMenu ? "sidebar open" : "sidebar"}><div className="sidebar-header"><Logo /><button className="icon-button close-mobile" onClick={() => setMobileMenu(false)}><X size={18} /></button></div><div className="workspace-chip"><span className="workspace-symbol">{avatarName(data.classes[0]?.name || "BK")}</span><div><strong>{data.profile.schoolName || "Ruang kerja"}</strong><small>{roleLabel(data.profile.role)} · {data.classes.length} kelas</small></div></div><nav className="nav-list">{NAV_ITEMS.map((item) => { const Icon = item.icon; return <button key={item.id} className={active === item.id ? "nav-item active" : "nav-item"} onClick={() => { setActive(item.id); setMobileMenu(false); }}><Icon size={18} /><span>{item.label}</span>{item.id === "assistant" && <em>AI</em>}</button>; })}</nav><div className="sidebar-footer"><button className={active === "settings" ? "nav-item active" : "nav-item"} onClick={() => setActive("settings")}><Settings2 size={18} /><span>Pengaturan</span></button><button className="logout-button" onClick={logout}><LogOut size={16} /><span>Keluar</span></button></div></aside>
-    <main className="main"><header className="topbar"><button className="icon-button mobile-trigger" onClick={() => setMobileMenu(true)}><Menu size={19} /></button><div><span className="eyebrow">Buku Kerja Digital</span><h1>{NAV_ITEMS.find((item) => item.id === active)?.label || "Pengaturan"}</h1></div><div className="top-actions"><span className="connection-pill"><span></span>{auth.mode === "local" ? "Mode lokal" : "Database terhubung"}</span><button className="theme-button" onClick={() => setDark((current) => !current)}>{dark ? <Sun size={17} /> : <Moon size={17} />}</button><span className="top-avatar">{avatarName(data.profile.fullName)}</span></div></header><div className="content">{error && <div className="form-notice error page-notice">{error}</div>}{notice && <div className={"form-notice " + notice.type + " page-notice"}>{notice.message}</div>}{page}</div></main><nav className="mobile-nav">{NAV_ITEMS.slice(0, 5).map((item) => { const Icon = item.icon; return <button key={item.id} className={active === item.id ? "active" : ""} onClick={() => setActive(item.id)}><Icon size={18} /><span>{item.id === "assistant" ? "Asisten" : item.label.split(" ")[0]}</span></button>; })}</nav>
+    <main className="main"><header className="topbar"><button className="icon-button mobile-trigger" onClick={() => setMobileMenu(true)}><Menu size={19} /></button><div><span className="eyebrow">Buku Kerja Digital</span><h1>{NAV_ITEMS.find((item) => item.id === active)?.label || "Pengaturan"}</h1></div><div className="top-actions"><span className="connection-pill"><span></span>{"Database terhubung"}</span><button className="theme-button" onClick={() => setDark((current) => !current)}>{dark ? <Sun size={17} /> : <Moon size={17} />}</button><span className="top-avatar">{avatarName(data.profile.fullName)}</span></div></header><div className="content">{error && <div className="form-notice error page-notice">{error}</div>}{notice && <div className={"form-notice " + notice.type + " page-notice"}>{notice.message}</div>}{page}</div></main><nav className="mobile-nav">{NAV_ITEMS.slice(0, 5).map((item) => { const Icon = item.icon; return <button key={item.id} className={active === item.id ? "active" : ""} onClick={() => setActive(item.id)}><Icon size={18} /><span>{item.id === "assistant" ? "Asisten" : item.label.split(" ")[0]}</span></button>; })}</nav>
   </div>;
 }
 
@@ -501,7 +507,7 @@ async function saveGradeRows(rows, data, auth, refresh, commit) {
     const student = data.students.find((item) => (studentNisn && text(item.nisn) === studentNisn) || (studentName && text(item.full_name).toLowerCase() === studentName.toLowerCase()));
     if (!student || !className || !subjectName || !title || Number.isNaN(point)) { skipped += 1; continue; }
     const grade = { id: id("grade"), student_id: student.id, student_nisn: student.nisn || studentNisn, student_name: student.full_name, class_name: className, subject_name: subjectName, academic_year: text(row.academic_year), semester: text(row.semester), assessment_title: title, assessment_category: text(row.assessment_category || "LAINNYA"), assessment_date: text(row.assessment_date) || today(), point, max_point: Number(text(row.max_point).replace(",", ".")) || 100, comment: text(row.comment) };
-    if (auth.mode === "local") { localGrades.push(grade); added += 1; continue; }
+    if (auth.mode === "preview") { localGrades.push(grade); added += 1; continue; }
     let classRow = data.classes.find((item) => text(item.name).toLowerCase() === className.toLowerCase());
     let subjectRow = data.subjects.find((item) => text(item.name).toLowerCase() === subjectName.toLowerCase());
     if (!classRow) {
@@ -530,7 +536,7 @@ async function saveGradeRows(rows, data, auth, refresh, commit) {
     if (scoreResult.error) throw scoreResult.error;
     added += 1;
   }
-  if (auth.mode === "local") commit({ ...data, grades: localGrades }); else await refresh();
+  if (auth.mode === "preview") commit({ ...data, grades: localGrades }); else await refresh();
   return { added, skipped };
 }
 
@@ -550,26 +556,28 @@ function QuickTask({ done, title, desc, onClick }) { return <button className="q
 
 function AssistantPage({ data }) {
   const [prompt, setPrompt] = useState(""); const [messages, setMessages] = useState([]); const [busy, setBusy] = useState(false);
-  const suggestions = ["Ringkas jurnal saya hari ini", "Buatkan refleksi pembelajaran", "Analisis presensi kelas", "Buat tindak lanjut siswa"];
-  const send = async (value = prompt) => { const question = text(value); if (!question || busy) return; setPrompt(""); setMessages((current) => [...current, { role: "user", text: question }]); setBusy(true); const answer = await askAssistant(question, data); setMessages((current) => [...current, { role: "assistant", text: answer }]); setBusy(false); };
-  return <section className="assistant-page"><div className="assistant-intro"><div className="ai-orb large"><Sparkles size={25} /></div><p className="eyebrow">ASISTEN GURU</p><h2>Beritahu apa yang ingin dibereskan.</h2><p>Asisten membantu menyusun hasil dari konteks ruang kerjamu. Guru tetap memeriksa dan mengedit sebelum menyimpan.</p></div><div className="chat-area">{messages.length === 0 && <div className="suggestion-grid">{suggestions.map((item) => <button className="suggestion" key={item} onClick={() => send(item)}><Sparkles size={15} /><span>{item}</span><ArrowRight size={14} /></button>)}</div>}{messages.map((message, index) => <div className={message.role === "user" ? "message user" : "message assistant"} key={index}><span className="message-label">{message.role === "user" ? "Kamu" : "Asisten Guru"}</span><div className="message-body">{message.text}</div></div>)}{busy && <div className="message assistant"><span className="message-label">Asisten Guru</span><div className="typing"><i></i><i></i><i></i></div></div>}</div><div className="prompt-box"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); send(); } }} placeholder="Tulis perintah untuk asisten guru…" rows="1" /><button className="send-button" disabled={!text(prompt) || busy} onClick={() => send()}><ArrowRight size={17} /></button><small>Enter untuk mengirim · output AI tanpa format dekoratif agar mudah diedit.</small></div></section>;
+  const suggestions = ["Ringkas jurnal hari ini", "Analisis pola presensi", "Buat refleksi pembelajaran", "Susun tindak lanjut siswa"];
+  const send = async (value = prompt) => {
+    const question = text(value); if (!question || busy) return;
+    setPrompt(""); setMessages((current) => [...current, { role: "user", text: question }]); setBusy(true);
+    try { const answer = await askAssistant(question, data); setMessages((current) => [...current, { role: "assistant", text: answer }]); }
+    catch (error) { setMessages((current) => [...current, { role: "error", text: error.message || "Asisten belum dapat merespons. Periksa API key di Pengaturan." }]); }
+    finally { setBusy(false); }
+  };
+  return <section className="assistant-page">
+    <div className={messages.length ? "assistant-intro compact" : "assistant-intro"}><div className="ai-orb large"><Sparkles size={25} /></div><p className="eyebrow">ASISTEN GURU</p><h2>{messages.length ? "Percakapan ruang kerja" : "Apa yang ingin dibereskan?"}</h2>{!messages.length && <p>Tulis perintah dengan bahasa biasa. Asisten membaca ringkasan data kelasmu dan memberi hasil tanpa simbol markdown yang mengganggu.</p>}</div>
+    <div className="chat-area">{messages.length === 0 && <div className="suggestion-grid">{suggestions.map((item) => <button className="suggestion" key={item} onClick={() => send(item)}><Sparkles size={15} /><span>{item}</span><ArrowRight size={14} /></button>)}</div>}{messages.map((message, index) => <div className={`message ${message.role}`} key={index}><span className="message-label">{message.role === "user" ? "Kamu" : message.role === "error" ? "Perlu disiapkan" : "Asisten Guru"}</span><div className="message-body">{message.text}</div></div>)}{busy && <div className="message assistant"><span className="message-label">Asisten Guru</span><div className="typing"><i></i><i></i><i></i></div></div>}</div>
+    <div className="prompt-box"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); send(); } }} placeholder="Tulis perintah untuk asisten guru…" rows="1" /><button aria-label="Kirim perintah" className="send-button" disabled={!text(prompt) || busy} onClick={() => send()}><ArrowRight size={18} /></button><small>Enter untuk mengirim · Shift + Enter untuk baris baru</small></div>
+  </section>;
 }
 
 async function askAssistant(prompt, data) {
-  const key = window.localStorage.getItem(API_KEY);
-  if (key) {
-    try {
-      const context = "Konteks buku kerja: " + data.students.length + " siswa, " + data.classes.length + " kelas, " + data.journals.length + " jurnal, " + data.grades.length + " nilai. Jawab dalam Bahasa Indonesia, plain text, ringkas, tanpa markdown dekoratif. Perintah guru: " + prompt;
-      const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + encodeURIComponent(key), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: context }] }] }) });
-      const json = await response.json();
-      const output = json.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim();
-      if (output) return output;
-    } catch { /* fallback below */ }
-  }
-  const lower = prompt.toLowerCase();
-  if (lower.includes("presensi")) return "Data presensi yang bisa saya baca saat ini berjumlah " + data.attendance.length + " catatan. Untuk analisis yang lebih spesifik, isi presensi terlebih dahulu lalu minta saya merangkum pola hadir, izin, sakit, dan alpa.";
-  if (lower.includes("jurnal") || lower.includes("refleksi")) return "Belum ada cukup jurnal untuk dirangkum. Setelah kamu menyimpan jurnal pembelajaran, minta saya membuat refleksi, tindak lanjut, atau ringkasan untuk laporan.";
-  return "Saya siap membantu. Data ruang kerja saat ini berisi " + data.students.length + " siswa, " + data.classes.length + " kelas, dan " + data.grades.length + " nilai. Hubungkan API key di Pengaturan untuk jawaban AI yang lebih mendalam.";
+  const session = supabase ? await supabase.auth.getSession() : null;
+  const token = session?.data?.session?.access_token || "";
+  const response = await fetch("/api/ai", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ prompt, userKey: window.localStorage.getItem(API_KEY) || "", context: { profile: data.profile, classes: data.classes.map((item) => item.name), subjects: data.subjects.map((item) => item.name), studentCount: data.students.length, attendance: data.attendance.slice(0, 300), journals: data.journals.slice(0, 80), grades: data.grades.slice(0, 300) } }) });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || "Asisten belum dapat merespons.");
+  return payload.reply;
 }
 
 function ImportActions({ onImport, accept = ".xlsx,.xls,.csv" }) { const inputId = id("file"); return <div className="import-actions"><a className="secondary-button" href={TEMPLATE_URL} download><Download size={16} /> Unduh template</a><label className="primary-button file-button" htmlFor={inputId}><Upload size={16} /> Import file<input id={inputId} type="file" accept={accept} onChange={(event) => { const file = event.target.files?.[0]; if (file) onImport(file); event.target.value = ""; }} /></label></div>; }
@@ -612,9 +620,14 @@ function ReportsPage({ data }) {
 function ReportCard({ icon: Icon, title, value, desc, onClick }) { return <div className="report-card"><div className="report-icon"><Icon size={19} /></div><strong>{title}</strong><b>{value}</b><p>{desc}</p>{onClick && <button className="text-button" onClick={onClick}>Unduh data <Download size={14} /></button>}</div>; }
 
 function SettingsPage({ data, onLogout }) {
-  const [key, setKey] = useState(() => window.localStorage.getItem(API_KEY) || ""); const [saved, setSaved] = useState(false);
-  const save = () => { window.localStorage.setItem(API_KEY, key.trim()); setSaved(true); window.setTimeout(() => setSaved(false), 2500); };
-  return <PageSection eyebrow="PENGATURAN" title="Pengaturan"><div className="settings-stack"><div className="settings-card"><div><p className="eyebrow">PROFIL</p><h3>{data.profile.fullName}</h3><p>{data.profile.schoolName} · {roleLabel(data.profile.role)}</p></div><span className="connection-pill"><span></span>{isSupabaseConfigured ? "Supabase aktif" : "Mode lokal"}</span></div><div className="settings-card"><div><p className="eyebrow">ASISTEN AI</p><h3>API key pribadi</h3><p>Disimpan di browser ini untuk pengujian. Untuk penjualan skala banyak, pindahkan pemanggilan AI ke server/Edge Function.</p></div><div className="key-row"><input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="Masukkan API key Gemini" /><button className="primary-button" onClick={save}><Save size={15} /> Simpan</button></div>{saved && <small className="saved-label">API key tersimpan di perangkat ini.</small>}</div><div className="settings-card"><div><p className="eyebrow">DATA</p><h3>Template import</h3><p>Unduh format resmi untuk siswa, nilai, dan presensi.</p></div><a className="secondary-button" href={TEMPLATE_URL} download><Download size={16} /> Unduh template</a></div><div className="settings-card danger-card"><div><h3>Keluar dari aplikasi</h3><p>Sesi di perangkat ini akan dihapus.</p></div><button className="secondary-button" onClick={onLogout}><LogOut size={16} /> Keluar</button></div></div></PageSection>;
+  const [key, setKey] = useState(() => window.localStorage.getItem(API_KEY) || ""); const [saved, setSaved] = useState(false); const [showKey, setShowKey] = useState(false);
+  const save = () => { const cleaned = key.trim(); if (cleaned) window.localStorage.setItem(API_KEY, cleaned); else window.localStorage.removeItem(API_KEY); setSaved(true); window.setTimeout(() => setSaved(false), 2500); };
+  return <PageSection eyebrow="PENGATURAN" title="Pengaturan"><div className="settings-stack">
+    <div className="settings-card"><div><p className="eyebrow">PROFIL</p><h3>{data.profile.fullName}</h3><p>{data.profile.schoolName} · {roleLabel(data.profile.role)}</p></div><span className="connection-pill"><span></span>Database terhubung</span></div>
+    <div className="settings-card ai-settings"><div className="settings-copy"><p className="eyebrow">ASISTEN AI</p><h3>API key Gemini pribadi</h3><p>Key aplikasi akan digunakan lebih dulu. Key ini menjadi cadangan akunmu saat kuota bersama mencapai batas.</p></div><div className="key-row"><div className="key-input-wrap"><input type={showKey ? "text" : "password"} value={key} onChange={(event) => setKey(event.target.value)} placeholder="Tempel API key Gemini" /><button className="icon-button" type="button" aria-label={showKey ? "Sembunyikan API key" : "Tampilkan API key"} onClick={() => setShowKey((current) => !current)}>{showKey ? <EyeOff size={17}/> : <Eye size={17}/>}</button></div><button className="primary-button" onClick={save}><Save size={15} /> Simpan</button></div>{saved && <small className="saved-label">API key siap digunakan dari perangkat ini.</small>}<details className="tutorial-details"><summary>Video dan panduan memasukkan API key</summary><div className="video-frame"><iframe src="https://www.youtube.com/embed/mUTAq9ffk0s" title="Tutorial memasukkan API key Gemini" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen></iframe></div><ol><li>Buka Google AI Studio dan buat API key.</li><li>Salin key, tempel di kolom di atas, lalu simpan.</li><li>Buka Asisten Guru dan tulis perintah seperti biasa.</li></ol></details></div>
+    <div className="settings-card"><div><p className="eyebrow">DATA</p><h3>Template import siap pakai</h3><p>Satu file resmi untuk siswa, nilai, dan presensi; petunjuk pengisian tersedia di sheet pertama.</p></div><a className="secondary-button" href={TEMPLATE_URL} download><Download size={16} /> Unduh template</a></div>
+    <div className="settings-card danger-card"><div><h3>Keluar dari aplikasi</h3><p>Sesi akun di perangkat ini akan diakhiri.</p></div><button className="secondary-button" onClick={onLogout}><LogOut size={16} /> Keluar</button></div>
+  </div></PageSection>;
 }
 
 function EmptyState({ title, desc }) { return <div className="empty-state"><div className="empty-icon"><FileText size={20} /></div><strong>{title}</strong><p>{desc}</p></div>; }
