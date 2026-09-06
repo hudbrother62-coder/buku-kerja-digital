@@ -194,10 +194,12 @@ function LoadingScreen() { return <div className="loading-screen"><Logo /><span 
 
 function authErrorMessage(error) {
   const message = String(error?.message || "");
-  if (/email not confirmed/i.test(message)) return "Email belum diaktifkan. Klik tautan aktivasi di inbox atau kirim ulang email konfirmasi.";
+  if (/email rate limit exceeded/i.test(message)) return "Pendaftaran sedang terlalu ramai. Tunggu beberapa menit lalu coba kembali.";
+  if (/email not confirmed/i.test(message)) return "Akun belum aktif. Silakan hubungi pengelola aplikasi.";
   if (/invalid login credentials/i.test(message)) return "Email atau kata sandi tidak cocok. Periksa kembali data masukmu.";
-  if (/user already registered/i.test(message)) return "Email ini sudah terdaftar. Silakan masuk atau kirim ulang email aktivasi.";
-  if (/password should be at least/i.test(message)) return "Kata sandi minimal 6 karakter.";
+  if (/already registered|already exists|user_already_exists/i.test(message)) return "Email ini sudah terdaftar. Pilih Masuk dan gunakan akun yang sudah ada.";
+  if (/terlalu banyak percobaan|too many requests/i.test(message)) return "Terlalu banyak percobaan pendaftaran. Tunggu beberapa saat lalu coba kembali.";
+  if (/password should be at least|kata sandi minimal/i.test(message)) return "Kata sandi minimal 8 karakter.";
   return message || "Terjadi kesalahan. Coba lagi.";
 }
 
@@ -205,16 +207,23 @@ function AuthScreen({ onAuth, configurationPending = false }) {
   const [mode, setMode] = useState("login");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
-  const [pendingEmail, setPendingEmail] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [form, setForm] = useState({ name: "", email: "", password: "", school: "", role: "wali_kelas" });
+  const [form, setForm] = useState({ name: "", email: "", password: "", confirmPassword: "" });
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const submit = async (event) => {
     event.preventDefault();
     setNotice(null);
-    if (!form.email || !form.password || (mode === "register" && (!form.name || !form.school))) {
+    if (!form.email || !form.password || (mode === "register" && !form.name)) {
       setNotice({ type: "error", message: "Lengkapi data yang wajib diisi terlebih dahulu." });
+      return;
+    }
+    if (mode === "register" && form.password.length < 8) {
+      setNotice({ type: "error", message: "Kata sandi minimal 8 karakter." });
+      return;
+    }
+    if (mode === "register" && form.password !== form.confirmPassword) {
+      setNotice({ type: "error", message: "Kata sandi yang diulangi belum sama." });
       return;
     }
     setBusy(true);
@@ -225,40 +234,23 @@ function AuthScreen({ onAuth, configurationPending = false }) {
         if (error) throw error;
         onAuth({ mode: "supabase", user: data.user, accessToken: data.session?.access_token });
       } else {
-        const { data, error } = await supabase.auth.signUp({
-          email: form.email,
-          password: form.password,
-          options: {
-            emailRedirectTo: window.location.origin,
-            data: { full_name: form.name, school_name: form.school, role: form.role },
-          },
+        const { error: registerError } = await supabase.functions.invoke("register-teacher", {
+          body: { name: form.name.trim(), email: form.email.trim(), password: form.password },
         });
-        if (error) throw error;
-        if (data.session) onAuth({ mode: "supabase", user: data.user, accessToken: data.session.access_token });
-        else {
-          setPendingEmail(form.email);
-          setMode("login");
-          setForm((current) => ({ ...current, password: "" }));
-          setNotice({ type: "verify", message: "Akun berhasil dibuat. Klik tautan aktivasi yang kami kirim ke emailmu, lalu masuk." });
-          window.scrollTo({ top: 0, behavior: "smooth" });
+        if (registerError) {
+          let detail = registerError.message;
+          try {
+            const body = await registerError.context?.json();
+            detail = body?.error || detail;
+          } catch {
+            // Keep the original function error when no JSON body is available.
+          }
+          throw new Error(detail);
         }
+        const { data, error } = await supabase.auth.signInWithPassword({ email: form.email.trim(), password: form.password });
+        if (error) throw error;
+        onAuth({ mode: "supabase", user: data.user, accessToken: data.session?.access_token });
       }
-    } catch (error) {
-      setNotice({ type: "error", message: authErrorMessage(error) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const resendConfirmation = async () => {
-    const email = pendingEmail || form.email;
-    if (!email) return setNotice({ type: "error", message: "Masukkan email yang sudah didaftarkan terlebih dahulu." });
-    setBusy(true);
-    try {
-      const { error } = await supabase.auth.resend({ type: "signup", email, options: { emailRedirectTo: window.location.origin } });
-      if (error) throw error;
-      setPendingEmail(email);
-      setNotice({ type: "verify", message: "Email aktivasi sudah dikirim ulang. Periksa inbox serta folder spam." });
     } catch (error) {
       setNotice({ type: "error", message: authErrorMessage(error) });
     } finally {
@@ -278,12 +270,13 @@ function AuthScreen({ onAuth, configurationPending = false }) {
       <section className="auth-panel"><div className="auth-mobile-brand"><Logo /></div><div className="auth-card">
         <div className="auth-heading"><p className="eyebrow">{mode === "login" ? "SELAMAT DATANG KEMBALI" : "MULAI RUANG KERJA"}</p><h1>{mode === "login" ? "Masuk ke Bantu Beres" : "Buat akun guru"}</h1><p>{mode === "login" ? "Lanjutkan pekerjaan kelasmu dari tempat terakhir." : "Siapkan ruang kerja pribadi untuk kelas dan mata pelajaranmu."}</p></div>
         {configurationPending && <div className="setup-notice"><ShieldCheck size={18}/><span><strong>Database khusus sedang menunggu slot</strong><small>Login akan aktif setelah project Supabase baru tersedia. Data tidak memakai database aplikasi lain.</small></span></div>}
-        {notice && <div className={"form-notice " + notice.type} role="status"><span>{notice.message}</span>{notice.type === "verify" && <button type="button" onClick={resendConfirmation} disabled={busy}>Kirim ulang email</button>}</div>}
+        {notice && <div className={"form-notice " + notice.type} role="status"><span>{notice.message}</span></div>}
         <div className="auth-tabs"><button className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setNotice(null); }}>Masuk</button><button className={mode === "register" ? "active" : ""} onClick={() => { setMode("register"); setNotice(null); }}>Daftar</button></div>
         <form onSubmit={submit} className="auth-form">
-          {mode === "register" && <><Field label="Nama lengkap" value={form.name} onChange={(value) => update("name", value)} placeholder="Contoh: Rina Wulandari" /><Field label="Nama sekolah" value={form.school} onChange={(value) => update("school", value)} placeholder="Contoh: SMP Negeri 1" /><label className="field"><span>Peran utama</span><select value={form.role} onChange={(event) => update("role", event.target.value)}><option value="wali_kelas">Wali kelas</option><option value="guru_mapel">Guru mata pelajaran</option></select></label></>}
+          {mode === "register" && <Field label="Nama lengkap" value={form.name} onChange={(value) => update("name", value)} placeholder="Contoh: Rina Wulandari" />}
           <Field label="Email" value={form.email} onChange={(value) => update("email", value)} placeholder="nama@sekolah.sch.id" type="email" />
-          <label className="field"><span>Kata sandi</span><div className="password-field"><input type={showPassword ? "text" : "password"} value={form.password} onChange={(event) => update("password", event.target.value)} placeholder="Minimal 6 karakter"/><button type="button" aria-label={showPassword ? "Sembunyikan kata sandi" : "Tampilkan kata sandi"} onClick={() => setShowPassword((current) => !current)}>{showPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div></label>
+          <label className="field"><span>Kata sandi</span><div className="password-field"><input type={showPassword ? "text" : "password"} value={form.password} onChange={(event) => update("password", event.target.value)} placeholder="Minimal 8 karakter" minLength={mode === "register" ? 8 : 6}/><button type="button" aria-label={showPassword ? "Sembunyikan kata sandi" : "Tampilkan kata sandi"} onClick={() => setShowPassword((current) => !current)}>{showPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div></label>
+          {mode === "register" && <label className="field"><span>Ulangi kata sandi</span><input type={showPassword ? "text" : "password"} value={form.confirmPassword} onChange={(event) => update("confirmPassword", event.target.value)} placeholder="Ketik ulang kata sandi" minLength={8}/></label>}
           <button className="primary-button wide" disabled={busy}>{busy ? "Memproses…" : mode === "login" ? "Masuk ke ruang kerja" : "Buat akun"}<ArrowRight size={17} /></button>
         </form>
         <p className="auth-footnote">Dengan melanjutkan, kamu tetap menjadi pemeriksa akhir untuk semua catatan, nilai, dan rekomendasi AI.</p>
