@@ -39,14 +39,17 @@ function compactContext(context = {}) {
   const statusCount = (context.attendance || []).reduce((acc, row) => ({ ...acc, [row.status]: (acc[row.status] || 0) + 1 }), {});
   const gradeValues = (context.grades || []).map((row) => Number(row.point)).filter(Number.isFinite);
   const average = gradeValues.length ? Math.round(gradeValues.reduce((sum, value) => sum + value, 0) / gradeValues.length) : null;
+  const studentMap = Object.fromEntries((context.students || []).map((student) => [student.id, student]));
+  const attention = (context.grades || []).filter((row) => Number(row.point) < Number(row.max_point || 100) * 0.75 || String(row.comment || "").trim()).slice(0, 40).map((row) => ({ student: row.student_name || studentMap[row.student_id]?.name || "", class: row.class_name || "", subject: row.subject_name || "", task: row.assessment_title || "", point: row.point, max: row.max_point, note: row.comment || "" }));
   return {
     teacher: context.profile?.fullName || "Guru",
     role: context.profile?.role || "guru",
     school: context.profile?.schoolName || "",
-    classes: context.classes || [], subjects: context.subjects || [], studentCount: Number(context.studentCount) || 0,
+    classes: context.classes || [], subjects: context.subjects || [], students: (context.students || []).slice(0, 500),
     attendanceSummary: statusCount,
-    recentJournals: (context.journals || []).slice(0, 24).map(({ journal_date, topic, activity, reflection }) => ({ journal_date, topic, activity, reflection })),
-    gradeSummary: { count: gradeValues.length, average },
+    recentJournals: (context.journals || []).slice(0, 32).map(({ journal_date, topic, activity, reflection, follow_up }) => ({ journal_date, topic, activity, reflection, follow_up })),
+    gradeSummary: { count: gradeValues.length, average, attention },
+    weeklySchedules: (context.schedules || []).slice(0, 100),
   };
 }
 
@@ -59,9 +62,9 @@ async function generate(key, prompt, context) {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: "Anda adalah Asisten Guru Bantu Beres. Bantu wali kelas dan guru mata pelajaran menyusun administrasi, analisis kelas, refleksi, dan tindak lanjut. Jawab dalam Bahasa Indonesia yang jelas dan langsung. Jangan gunakan markdown dekoratif, tanda bintang, pagar judul, atau code fence. Jangan mengarang data siswa. Sebutkan asumsi bila konteks belum cukup. Guru selalu menjadi pemeriksa akhir." }] },
+        systemInstruction: { parts: [{ text: "Anda adalah Asisten Guru Bantu Beres untuk pendidik profesional. Sapa atau panggil guru dengan nama depannya secara natural, tidak di setiap paragraf. Pahami perbedaan wali kelas, guru mata pelajaran, dan peran gabungan. Bantu menyusun administrasi, menganalisis presensi dan hasil belajar, menulis refleksi pedagogis, merancang tindak lanjut, remedial, pengayaan, komunikasi orang tua, serta agenda kerja. Utamakan analisis yang tajam, langkah yang dapat dilaksanakan, dan bahasa Indonesia yang setara dengan kompetensi guru. Gunakan data konteks bila tersedia, tetapi jangan pernah mengarang nama, nilai, kondisi, atau fakta siswa. Jika data kurang, jelaskan informasi yang dibutuhkan atau nyatakan asumsi secara singkat. Jangan gunakan markdown dekoratif, tanda bintang, pagar judul, atau code fence. Gunakan paragraf pendek dan penomoran polos hanya bila membantu. Guru selalu menjadi pemeriksa dan pengambil keputusan akhir." }] },
         contents: [{ role: "user", parts: [{ text: `Konteks ruang kerja:\n${JSON.stringify(compactContext(context))}\n\nPerintah guru:\n${String(prompt).slice(0, 8000)}` }] }],
-        generationConfig: { temperature: 0.35, topP: 0.9, maxOutputTokens: 4096 },
+        generationConfig: { temperature: 0.25, topP: 0.9, maxOutputTokens: 8192 },
       }), signal: controller.signal,
     });
     const payload = await response.json().catch(() => ({}));
