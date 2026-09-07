@@ -77,6 +77,15 @@ const emptyData = () => ({
   events: [],
 });
 
+function normalizeWorkspaceData(value) {
+  const fallback = emptyData();
+  if (!value || typeof value !== "object") return fallback;
+  const arrayKeys = ["academicYears", "classes", "subjects", "students", "attendance", "journals", "grades", "assignments", "schedules", "events"];
+  const normalized = { ...fallback, ...value, profile: { ...fallback.profile, ...(value.profile || {}) } };
+  arrayKeys.forEach((key) => { normalized[key] = Array.isArray(value[key]) ? value[key] : []; });
+  return normalized;
+}
+
 const previewData = () => ({
   profile: { fullName: "Rina Wulandari", schoolName: "SMP Negeri 1", role: "wali_kelas", setupComplete: true },
   school: { id: "school-preview", name: "SMP Negeri 1" },
@@ -456,8 +465,8 @@ function SetupScreen({ auth, onComplete }) {
 function Workspace({ auth, onLogout }) {
   const [data, setData] = useState(() => {
     if (auth.mode === "preview") return previewData();
-    const cached = readSessionJson(accountKey(auth.user), null);
-    return cached?.profile?.setupComplete ? cached : emptyData();
+    const cached = normalizeWorkspaceData(readSessionJson(accountKey(auth.user), null));
+    return cached.profile.setupComplete ? cached : emptyData();
   });
   const [loading, setLoading] = useState(() => !data.profile.setupComplete);
   const [error, setError] = useState("");
@@ -470,7 +479,7 @@ function Workspace({ auth, onLogout }) {
     if (blocking) setLoading(true);
     try {
       const next = auth.mode === "preview" ? previewData() : await fetchRemoteData(auth.user);
-      setData(next);
+      setData(normalizeWorkspaceData(next));
       writeSessionJson(accountKey(auth.user), next);
       setError("");
       return next;
@@ -486,7 +495,7 @@ function Workspace({ auth, onLogout }) {
   const completeSetup = (next) => { setData(next); setError(""); };
   const commit = (nextOrUpdater) => {
     setData((current) => {
-      const next = typeof nextOrUpdater === "function" ? nextOrUpdater(current) : nextOrUpdater;
+      const next = normalizeWorkspaceData(typeof nextOrUpdater === "function" ? nextOrUpdater(current) : nextOrUpdater);
       writeSessionJson(accountKey(auth.user), next);
       return next;
     });
@@ -504,7 +513,7 @@ function Workspace({ auth, onLogout }) {
   if (!data.profile.setupComplete) return <SetupScreen auth={auth} onComplete={completeSetup} />;
 
   const nextWeek = new Date(); nextWeek.setDate(nextWeek.getDate() + 7);
-  const notifications = [...data.events.filter((item) => item.event_date >= today() && item.event_date <= nextWeek.toISOString().slice(0,10)).map((item) => ({ id:"event-" + item.id, title:item.title, detail:`${item.event_date}${item.all_day ? " · seharian" : ` · ${text(item.start_time).slice(0,5)}`}` })), ...(!data.students.length ? [{ id:"setup-students", title:"Master Data belum lengkap", detail:"Tambahkan siswa agar presensi dan nilai dapat digunakan." }] : []), ...(data.students.length && !data.attendance.some((item) => item.attendance_date === today()) ? [{ id:"attendance-today", title:"Presensi hari ini belum diisi", detail:"Pilih kelas dan catat kehadiran siswa." }] : [])].slice(0,8);
+  const notifications = [...(data.events || []).filter((item) => item.event_date >= today() && item.event_date <= nextWeek.toISOString().slice(0,10)).map((item) => ({ id:"event-" + item.id, title:item.title, detail:`${item.event_date}${item.all_day ? " · seharian" : ` · ${text(item.start_time).slice(0,5)}`}` })), ...(!data.students.length ? [{ id:"setup-students", title:"Master Data belum lengkap", detail:"Tambahkan siswa agar presensi dan nilai dapat digunakan." }] : []), ...(data.students.length && !data.attendance.some((item) => item.attendance_date === today()) ? [{ id:"attendance-today", title:"Presensi hari ini belum diisi", detail:"Pilih kelas dan catat kehadiran siswa." }] : [])].slice(0,8);
 
   const handlers = {
     saveClass: async (draft, classId = null) => {
@@ -649,7 +658,7 @@ function Workspace({ auth, onLogout }) {
             next.grades = current.grades.filter((item) => item.class_name !== row.name && !studentIds.has(item.student_id));
             next.journals = current.journals.filter((item) => item.class_id !== row.id);
             next.schedules = current.schedules.filter((item) => item.class_id !== row.id);
-            next.events = current.events.filter((item) => item.class_id !== row.id);
+            next.events = (current.events || []).filter((item) => item.class_id !== row.id);
           }
           return next;
         });
@@ -671,7 +680,7 @@ function Workspace({ auth, onLogout }) {
           const result = eventId ? await supabase.from("teacher_events").update(payload).eq("id", eventId).select().single() : await supabase.from("teacher_events").insert(payload).select().single();
           if (result.error) throw result.error; Object.assign(row, result.data);
         }
-        commit((current) => ({ ...current, events: eventId ? current.events.map((item) => item.id === eventId ? row : item) : [...current.events, row] }));
+        commit((current) => ({ ...current, events: eventId ? (current.events || []).map((item) => item.id === eventId ? row : item) : [...(current.events || []), row] }));
         notify("success", eventId ? "Kegiatan diperbarui." : "Kegiatan ditambahkan ke kalender.");
       } catch (err) { notify("error", err.message || "Kegiatan belum tersimpan."); throw err; }
     },
@@ -1176,7 +1185,7 @@ function AgendaPageV2({ data, onSave, onSaveEvent, onDelete, onImport }) {
   const isoLocal = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   const entriesFor = (date) => {
     const iso = isoLocal(date); const day = date.getDay() === 0 ? 7 : date.getDay();
-    const oneTime = data.events.filter((item) => item.event_date === iso).map((item) => ({ ...item, kind: "event" }));
+    const oneTime = (data.events || []).filter((item) => item.event_date === iso).map((item) => ({ ...item, kind: "event" }));
     const recurring = data.schedules.filter((item) => item.active !== false && Number(item.day_of_week) === day).map((item) => ({ ...item, title: data.subjects.find((row) => row.id === item.subject_id)?.name || "Agenda wali kelas", event_date: iso, kind: "schedule" }));
     return [...oneTime, ...recurring].sort((a, b) => text(a.start_time).localeCompare(text(b.start_time)));
   };
