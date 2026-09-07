@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ArrowRight,
@@ -364,12 +364,11 @@ async function fetchRemoteData(user) {
     supabase.from("teaching_journals").select("*").eq("school_id", school.id).order("journal_date", { ascending: false }).limit(300),
     supabase.from("assessments").select("*").eq("school_id", school.id).order("assessment_date", { ascending: false }).limit(300),
     supabase.from("assessment_scores").select("*").limit(2000),
-    supabase.from("teacher_assignments").select("*").eq("school_id", school.id).eq("user_id", user.id),
     supabase.from("teacher_schedules").select("*").eq("school_id", school.id).eq("user_id", user.id).order("day_of_week").order("start_time"),
   ]);
   const failed = results.find((result) => result.error);
   if (failed?.error) throw failed.error;
-  const [years, classes, subjects, students, enrollments, attendance, journals, assessments, scores, assignments, schedules] = results.map((result) => result.data || []);
+  const [years, classes, subjects, students, enrollments, attendance, journals, assessments, scores, schedules] = results.map((result) => result.data || []);
   data.academicYears = years;
   data.classes = classes;
   data.subjects = subjects;
@@ -382,7 +381,6 @@ async function fetchRemoteData(user) {
   });
   data.attendance = attendance;
   data.journals = journals;
-  data.assignments = assignments;
   data.schedules = schedules;
   const assessmentMap = new Map(assessments.map((item) => [item.id, item]));
   const studentById = new Map(data.students.map((item) => [item.id, item]));
@@ -774,6 +772,7 @@ function MasterDataPage({ data, onSaveClass, onSaveSubject, onSaveStudent, onImp
   const firstClassId = data.classes[0]?.id || "";
   const [classId, setClassId] = useState(firstClassId || "all");
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState("student");
   const [editingId, setEditingId] = useState(null);
@@ -795,13 +794,13 @@ function MasterDataPage({ data, onSaveClass, onSaveSubject, onSaveStudent, onImp
     return counts;
   }, [data.students]);
   const visible = useMemo(() => {
-    const needle = query.trim().toLowerCase();
+    const needle = deferredQuery.trim().toLowerCase();
     return data.students.filter((item) => {
       if (classId !== "all" && item.class_id !== classId) return false;
       if (!needle) return true;
       return [item.full_name, item.nickname, item.nis, item.nisn].map(text).join(" ").toLowerCase().includes(needle);
     });
-  }, [data.students, classId, query]);
+  }, [data.students, classId, deferredQuery]);
 
   const resetModal = (type) => {
     setEditingId(null);
