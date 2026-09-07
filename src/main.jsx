@@ -276,7 +276,6 @@ function AuthScreen({ onAuth, configurationPending = false }) {
   const [mode, setMode] = useState("login");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", password: "", confirmPassword: "" });
 
@@ -478,6 +477,7 @@ function Workspace({ auth, onLogout }) {
   const [dark, setDark] = useState(() => window.localStorage.getItem("bb_dark") === "1");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
 
   const refresh = async (blocking = false) => {
     if (blocking) setLoading(true);
