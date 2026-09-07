@@ -83,6 +83,10 @@ function normalizeWorkspaceData(value) {
   const arrayKeys = ["academicYears", "classes", "subjects", "students", "attendance", "journals", "grades", "assignments", "schedules", "events"];
   const normalized = { ...fallback, ...value, profile: { ...fallback.profile, ...(value.profile || {}) } };
   arrayKeys.forEach((key) => { normalized[key] = Array.isArray(value[key]) ? value[key] : []; });
+  normalized.profile.fullName = text(normalized.profile.fullName) || "Guru";
+  normalized.profile.schoolName = text(normalized.profile.schoolName);
+  normalized.profile.role = ["wali_kelas", "guru_mapel", "gabungan"].includes(normalized.profile.role) ? normalized.profile.role : "wali_kelas";
+  normalized.profile.preferences = normalized.profile.preferences && typeof normalized.profile.preferences === "object" ? normalized.profile.preferences : {};
   return normalized;
 }
 
@@ -1224,9 +1228,18 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
 function EmptyState({ title, desc }) { return <div className="empty-state"><div className="empty-icon"><FileText size={20} /></div><strong>{title}</strong><p>{desc}</p></div>; }
 
 class AppErrorBoundary extends React.Component {
-  constructor(props) { super(props); this.state = { hasError: false }; }
-  static getDerivedStateFromError() { return { hasError: true }; }
-  render() { if (this.state.hasError) return <div className="app-error"><div className="app-error-card"><div className="app-error-mark">!</div><h1>Aplikasi belum dapat dimuat</h1><p>Segarkan halaman. Jika masalah berlanjut, periksa konfigurasi deployment.</p><button onClick={() => window.location.reload()}>Segarkan halaman</button></div></div>; return this.props.children; }
+  constructor(props) { super(props); this.state = { hasError: false, detail: "" }; }
+  static getDerivedStateFromError(error) { return { hasError: true, detail: error?.message || "Kesalahan render tidak dikenal" }; }
+  componentDidCatch(error, info) {
+    fetch("/api/client-error", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: String(error?.message || error), stack: String(info?.componentStack || "").slice(0, 3000), path: window.location.pathname }) }).catch(() => {});
+    const previousRecovery = Number(window.localStorage.getItem("bb_last_auto_recovery") || 0);
+    if (Date.now() - previousRecovery > 60000) {
+      window.localStorage.setItem("bb_last_auto_recovery", String(Date.now()));
+      window.sessionStorage.clear();
+      window.location.reload();
+    }
+  }
+  render() { if (this.state.hasError) return <div className="app-error"><div className="app-error-card"><div className="app-error-mark">!</div><h1>Aplikasi belum dapat dimuat</h1><p>Aplikasi sudah mencoba memulihkan sesi. Tekan tombol di bawah untuk mengambil ulang data akun dari database.</p><small className="error-code">{this.state.detail}</small><button onClick={() => { window.sessionStorage.clear(); window.localStorage.removeItem("bb_last_auto_recovery"); window.location.reload(); }}>Pulihkan aplikasi</button></div></div>; return this.props.children; }
 }
 
 createRoot(document.getElementById("root")).render(<AppErrorBoundary><App /></AppErrorBoundary>);
