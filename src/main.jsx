@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ArrowRight,
@@ -7,6 +7,7 @@ import {
   CalendarDays,
   CalendarCheck2,
   Check,
+  CheckCircle2,
   ChevronDown,
   Clock3,
   ClipboardList,
@@ -17,6 +18,7 @@ import {
   FileText,
   GraduationCap,
   LayoutDashboard,
+  LoaderCircle,
   LogOut,
   Menu,
   Moon,
@@ -106,6 +108,18 @@ function readJson(key, fallback = null) {
 
 function writeJson(key, value) {
   window.localStorage.setItem(key, JSON.stringify(value));
+}
+
+function readSessionJson(key, fallback = null) {
+  try {
+    return JSON.parse(window.sessionStorage.getItem(key) || "null") ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeSessionJson(key, value) {
+  window.sessionStorage.setItem(key, JSON.stringify(value));
 }
 
 function accountKey(user) {
@@ -327,12 +341,14 @@ function Field({ label, value, onChange, placeholder, type = "text" }) {
 async function fetchRemoteData(user) {
   const data = emptyData();
   const metadata = user.user_metadata || {};
-  const profileResult = await supabase.from("profiles").select("*").eq("id", user.id).maybeSingle();
+  const [profileResult, schoolResult] = await Promise.all([
+    supabase.from("profiles").select("*").eq("id", user.id).maybeSingle(),
+    supabase.from("schools").select("*").eq("owner_id", user.id).order("created_at", { ascending: true }).limit(1),
+  ]);
   if (profileResult.error) throw profileResult.error;
+  if (schoolResult.error) throw schoolResult.error;
   const profile = profileResult.data || {};
   data.profile = { fullName: profile.full_name || metadata.full_name || user.email || "Guru", schoolName: metadata.school_name || "", role: profile.role || metadata.role || "wali_kelas", preferences: profile.preferences || {}, setupComplete: false };
-  const schoolResult = await supabase.from("schools").select("*").eq("owner_id", user.id).order("created_at", { ascending: true }).limit(1);
-  if (schoolResult.error) throw schoolResult.error;
   const school = schoolResult.data?.[0] || null;
   if (!school) return data;
   data.school = school;
@@ -357,22 +373,25 @@ async function fetchRemoteData(user) {
   data.academicYears = years;
   data.classes = classes;
   data.subjects = subjects;
-  const enrollmentByStudent = Object.fromEntries(enrollments.map((item) => [item.student_id, item]));
+  const enrollmentByStudent = new Map(enrollments.map((item) => [item.student_id, item]));
+  const classById = new Map(classes.map((item) => [item.id, item]));
   data.students = students.map((student) => {
-    const enrollment = enrollmentByStudent[student.id];
-    const classRow = classes.find((item) => item.id === enrollment?.class_id);
+    const enrollment = enrollmentByStudent.get(student.id);
+    const classRow = classById.get(enrollment?.class_id);
     return { ...student, class_id: enrollment?.class_id || null, class_name: classRow?.name || "" };
   });
   data.attendance = attendance;
   data.journals = journals;
   data.assignments = assignments;
   data.schedules = schedules;
-  const assessmentMap = Object.fromEntries(assessments.map((item) => [item.id, item]));
+  const assessmentMap = new Map(assessments.map((item) => [item.id, item]));
+  const studentById = new Map(data.students.map((item) => [item.id, item]));
+  const subjectById = new Map(subjects.map((item) => [item.id, item]));
   data.grades = scores.map((score) => {
-    const assessment = assessmentMap[score.assessment_id] || {};
-    const student = data.students.find((item) => item.id === score.student_id);
-    const classRow = classes.find((item) => item.id === assessment.class_id);
-    const subject = subjects.find((item) => item.id === assessment.subject_id);
+    const assessment = assessmentMap.get(score.assessment_id) || {};
+    const student = studentById.get(score.student_id);
+    const classRow = classById.get(assessment.class_id);
+    const subject = subjectById.get(assessment.subject_id);
     return { id: score.id, student_id: score.student_id, student_name: student?.full_name || "", student_nisn: student?.nisn || "", class_name: classRow?.name || "", subject_name: subject?.name || "", assessment_title: assessment.title || "", assessment_category: assessment.category || "", assessment_date: assessment.assessment_date || "", point: score.point, max_point: assessment.max_point || 100, comment: score.comment || "" };
   });
   return data;
@@ -427,8 +446,12 @@ function SetupScreen({ auth, onComplete }) {
 }
 
 function Workspace({ auth, onLogout }) {
-  const [data, setData] = useState(emptyData);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState(() => {
+    if (auth.mode === "preview") return previewData();
+    const cached = readSessionJson(accountKey(auth.user), null);
+    return cached?.profile?.setupComplete ? cached : emptyData();
+  });
+  const [loading, setLoading] = useState(() => !data.profile.setupComplete);
   const [error, setError] = useState("");
   const [active, setActive] = useState("dashboard");
   const [dark, setDark] = useState(() => window.localStorage.getItem("bb_dark") === "1");
@@ -440,6 +463,7 @@ function Workspace({ auth, onLogout }) {
     try {
       const next = auth.mode === "preview" ? previewData() : await fetchRemoteData(auth.user);
       setData(next);
+      writeSessionJson(accountKey(auth.user), next);
       setError("");
       return next;
     } catch (err) {
@@ -448,11 +472,17 @@ function Workspace({ auth, onLogout }) {
     } finally { if (blocking) setLoading(false); }
   };
 
-  useEffect(() => { refresh(true).catch(() => {}); }, [auth]);
+  useEffect(() => { refresh(!data.profile.setupComplete).catch(() => {}); }, [auth]);
   useEffect(() => { window.localStorage.setItem("bb_dark", dark ? "1" : "0"); document.documentElement.dataset.theme = dark ? "dark" : "light"; }, [dark]);
 
   const completeSetup = (next) => { setData(next); setError(""); };
-  const commit = (next) => { setData(next); if (auth.mode === "preview") writeJson(accountKey(auth.user), next); };
+  const commit = (nextOrUpdater) => {
+    setData((current) => {
+      const next = typeof nextOrUpdater === "function" ? nextOrUpdater(current) : nextOrUpdater;
+      writeSessionJson(accountKey(auth.user), next);
+      return next;
+    });
+  };
   const notify = (type, message) => { setNotice({ type, message }); window.setTimeout(() => setNotice(null), 4500); };
 
   const logout = async () => {
@@ -469,19 +499,21 @@ function Workspace({ auth, onLogout }) {
       try {
         if (auth.mode === "preview") {
           const row = { id: classId || id("class"), name: draft.name, grade_level: draft.grade_level, active: draft.active !== false };
-          commit({ ...data, classes: classId ? data.classes.map((item) => item.id === classId ? { ...item, ...row } : item) : [...data.classes, row] });
+          commit((current) => ({ ...current, classes: classId ? current.classes.map((item) => item.id === classId ? { ...item, ...row } : item) : [...current.classes, row], students: classId ? current.students.map((student) => student.class_id === classId ? { ...student, class_name: row.name } : student) : current.students }));
         } else {
           const payload = { school_id: data.school.id, academic_year_id: data.academicYears[0]?.id, name: draft.name, grade_level: draft.grade_level || text(draft.name).replace(/[^0-9]/g, ""), active: draft.active !== false };
-          const result = classId ? await supabase.from("classes").update(payload).eq("id", classId) : await supabase.from("classes").insert(payload);
-          if (result.error) throw result.error; await refresh();
+          const result = classId ? await supabase.from("classes").update(payload).eq("id", classId).select().single() : await supabase.from("classes").insert(payload).select().single();
+          if (result.error) throw result.error;
+          const row = result.data;
+          commit((current) => ({ ...current, classes: classId ? current.classes.map((item) => item.id === classId ? row : item) : [...current.classes, row], students: classId ? current.students.map((student) => student.class_id === classId ? { ...student, class_name: row.name } : student) : current.students }));
         }
         notify("success", classId ? "Kelas berhasil diperbarui." : "Kelas berhasil ditambahkan.");
       } catch (err) { notify("error", err.message || "Kelas belum tersimpan."); throw err; }
     },
     saveSubject: async (draft, subjectId = null) => {
       try {
-        if (auth.mode === "preview") { const row = { id: subjectId || id("subject"), name: draft.name, code: draft.code || "" }; commit({ ...data, subjects: subjectId ? data.subjects.map((item) => item.id === subjectId ? row : item) : [...data.subjects, row] }); }
-        else { const payload = { school_id: data.school.id, name: draft.name, code: draft.code || null }; const result = subjectId ? await supabase.from("subjects").update(payload).eq("id", subjectId) : await supabase.from("subjects").insert(payload); if (result.error) throw result.error; await refresh(); }
+        if (auth.mode === "preview") { const row = { id: subjectId || id("subject"), name: draft.name, code: draft.code || "" }; commit((current) => ({ ...current, subjects: subjectId ? current.subjects.map((item) => item.id === subjectId ? row : item) : [...current.subjects, row] })); }
+        else { const payload = { school_id: data.school.id, name: draft.name, code: draft.code || null }; const result = subjectId ? await supabase.from("subjects").update(payload).eq("id", subjectId).select().single() : await supabase.from("subjects").insert(payload).select().single(); if (result.error) throw result.error; const row = result.data; commit((current) => ({ ...current, subjects: subjectId ? current.subjects.map((item) => item.id === subjectId ? row : item) : [...current.subjects, row] })); }
         notify("success", subjectId ? "Mata pelajaran diperbarui." : "Mata pelajaran ditambahkan.");
       } catch (err) { notify("error", err.message || "Mata pelajaran belum tersimpan."); throw err; }
     },
@@ -490,7 +522,7 @@ function Workspace({ auth, onLogout }) {
         if (auth.mode === "preview") {
           const classRow = data.classes.find((item) => item.id === draft.class_id);
           const row = { ...draft, id: studentId || id("student"), class_name: classRow?.name || "", active: draft.active !== false };
-          commit({ ...data, students: studentId ? data.students.map((item) => item.id === studentId ? { ...item, ...row } : item) : [...data.students, row] });
+          commit((current) => ({ ...current, students: studentId ? current.students.map((item) => item.id === studentId ? { ...item, ...row } : item) : [...current.students, row] }));
         } else {
           const payload = { school_id: data.school.id, full_name: draft.full_name, nickname: draft.nickname || null, nis: draft.nis || null, nisn: draft.nisn || null, gender: draft.gender || null, birth_date: draft.birth_date || null, address: draft.address || null, phone: draft.phone || null, parent_phone: draft.parent_phone || null, active: draft.active !== false };
           const result = studentId ? await supabase.from("students").update(payload).eq("id", studentId).select().single() : await supabase.from("students").insert(payload).select().single();
@@ -500,7 +532,9 @@ function Workspace({ auth, onLogout }) {
             const deactivate = await supabase.from("enrollments").update({ active: false }).eq("school_id", data.school.id).eq("student_id", sid); if (deactivate.error) throw deactivate.error;
             const enrollment = await supabase.from("enrollments").upsert({ school_id: data.school.id, class_id: draft.class_id, student_id: sid, academic_year_id: year.id, active: true }, { onConflict: "class_id,student_id,academic_year_id" }); if (enrollment.error) throw enrollment.error;
           }
-          await refresh();
+          const classRow = data.classes.find((item) => item.id === draft.class_id);
+          const row = { ...result.data, class_id: draft.class_id, class_name: classRow?.name || "" };
+          commit((current) => ({ ...current, students: studentId ? current.students.map((item) => item.id === studentId ? row : item) : [...current.students, row] }));
         }
         notify("success", studentId ? "Data siswa berhasil diperbarui." : "Data siswa berhasil ditambahkan.");
       } catch (err) { notify("error", err.message || "Data siswa belum tersimpan."); throw err; }
@@ -521,17 +555,18 @@ function Workspace({ auth, onLogout }) {
       const classRow = data.classes.find((item) => item.id === classId) || data.classes[0];
       const className = text(classRow?.name).toLowerCase();
       const roster = data.students.filter((student) => !classRow || student.class_id === classRow.id || text(student.class_name).toLowerCase() === className || (data.classes.length === 1 && !student.class_id && !student.class_name));
+      const matchesSession = (item) => item.attendance_date === date && item.class_id === classRow?.id && item.session_type === sessionType && (sessionType !== "subject" || (item.subject_id === subjectId && text(item.start_time).slice(0, 5) === startTime && text(item.end_time).slice(0, 5) === endTime));
+      const records = roster.map((student) => ({ id: id("attendance"), student_id: student.id, class_id: classRow?.id, subject_id: sessionType === "subject" ? subjectId : null, attendance_date: date, session_type: sessionType, start_time: sessionType === "subject" ? startTime || null : null, end_time: sessionType === "subject" ? endTime || null : null, status: statuses[student.id] || "H", note: notes[student.id] || "" }));
       try {
         if (auth.mode === "preview") {
-          const kept = data.attendance.filter((item) => !(item.attendance_date === date && item.class_id === classRow?.id && item.session_type === sessionType));
-          const records = roster.map((student) => ({ id: id("attendance"), student_id: student.id, class_id: classRow?.id, subject_id: sessionType === "subject" ? subjectId : null, attendance_date: date, session_type: sessionType, start_time: startTime || null, end_time: endTime || null, status: statuses[student.id] || "H", note: notes[student.id] || "" }));
-          commit({ ...data, attendance: [...kept, ...records] });
+          commit((current) => ({ ...current, attendance: [...current.attendance.filter((item) => !matchesSession(item)), ...records] }));
         } else {
           let removal = supabase.from("attendance_records").delete().eq("school_id", data.school.id).eq("class_id", classRow.id).eq("attendance_date", date).eq("recorded_by", auth.user.id).eq("session_type", sessionType);
           removal = sessionType === "subject" ? removal.eq("subject_id", subjectId).eq("start_time", startTime).eq("end_time", endTime) : removal.is("subject_id", null);
           const removed = await removal; if (removed.error) throw removed.error;
           const payload = roster.map((student) => ({ school_id: data.school.id, class_id: classRow.id, subject_id: sessionType === "subject" ? subjectId : null, student_id: student.id, recorded_by: auth.user.id, attendance_date: date, session_type: sessionType, start_time: sessionType === "subject" ? startTime : null, end_time: sessionType === "subject" ? endTime : null, status: statuses[student.id] || "H", note: notes[student.id] || null }));
-          const result = await supabase.from("attendance_records").insert(payload); if (result.error) throw result.error; await refresh();
+          const result = await supabase.from("attendance_records").insert(payload); if (result.error) throw result.error;
+          commit((current) => ({ ...current, attendance: [...current.attendance.filter((item) => !matchesSession(item)), ...records] }));
         }
         notify("success", "Presensi " + date + " berhasil disimpan.");
       } catch (err) { notify("error", err.message || "Presensi belum tersimpan."); }
@@ -564,8 +599,8 @@ function Workspace({ auth, onLogout }) {
     },
     addJournal: async (draft) => {
       try {
-        if (auth.mode === "preview") commit({ ...data, journals: [{ ...draft, id: id("journal"), status: "complete" }, ...data.journals] });
-        else { const result = await supabase.from("teaching_journals").insert({ school_id: data.school.id, class_id: draft.class_id, subject_id: draft.subject_id || null, created_by: auth.user.id, journal_date: draft.journal_date, topic: draft.topic, activity: draft.activity, reflection: draft.reflection, follow_up: draft.follow_up || null, status: "complete" }); if (result.error) throw result.error; await refresh(); }
+        if (auth.mode === "preview") commit((current) => ({ ...current, journals: [{ ...draft, id: id("journal"), status: "complete" }, ...current.journals] }));
+        else { const result = await supabase.from("teaching_journals").insert({ school_id: data.school.id, class_id: draft.class_id, subject_id: draft.subject_id || null, created_by: auth.user.id, journal_date: draft.journal_date, topic: draft.topic, activity: draft.activity, reflection: draft.reflection, follow_up: draft.follow_up || null, status: "complete" }).select().single(); if (result.error) throw result.error; commit((current) => ({ ...current, journals: [result.data, ...current.journals] })); }
         notify("success", "Jurnal berhasil disimpan.");
       } catch (err) { notify("error", err.message || "Jurnal belum tersimpan."); }
     },
@@ -581,8 +616,8 @@ function Workspace({ auth, onLogout }) {
     },
     saveSchedule: async (draft, scheduleId = null) => {
       try {
-        if (auth.mode === "preview") { const row = { ...draft, id: scheduleId || id("schedule"), active: true }; commit({ ...data, schedules: scheduleId ? data.schedules.map((item) => item.id === scheduleId ? row : item) : [...data.schedules, row] }); }
-        else { const payload = { school_id: data.school.id, user_id: auth.user.id, class_id: draft.class_id, subject_id: draft.subject_id || null, day_of_week: Number(draft.day_of_week), start_time: draft.start_time, end_time: draft.end_time, note: draft.note || null, active: true, updated_at: new Date().toISOString() }; const result = scheduleId ? await supabase.from("teacher_schedules").update(payload).eq("id", scheduleId) : await supabase.from("teacher_schedules").insert(payload); if (result.error) throw result.error; await refresh(); }
+        if (auth.mode === "preview") { const row = { ...draft, id: scheduleId || id("schedule"), active: true }; commit((current) => ({ ...current, schedules: scheduleId ? current.schedules.map((item) => item.id === scheduleId ? row : item) : [...current.schedules, row] })); }
+        else { const payload = { school_id: data.school.id, user_id: auth.user.id, class_id: draft.class_id, subject_id: draft.subject_id || null, day_of_week: Number(draft.day_of_week), start_time: draft.start_time, end_time: draft.end_time, note: draft.note || null, active: true, updated_at: new Date().toISOString() }; const result = scheduleId ? await supabase.from("teacher_schedules").update(payload).eq("id", scheduleId).select().single() : await supabase.from("teacher_schedules").insert(payload).select().single(); if (result.error) throw result.error; const row = result.data; commit((current) => ({ ...current, schedules: scheduleId ? current.schedules.map((item) => item.id === scheduleId ? row : item) : [...current.schedules, row] })); }
         notify("success", scheduleId ? "Agenda diperbarui." : "Agenda mingguan ditambahkan.");
       } catch (err) { notify("error", err.message || "Agenda belum tersimpan."); throw err; }
     },
@@ -604,10 +639,10 @@ function Workspace({ auth, onLogout }) {
       } catch (err) { notify("error", err.message || "File agenda belum dapat dibaca."); }
     },
     updatePreferences: async (preferences) => {
-      try { if (auth.mode === "preview") commit({ ...data, profile: { ...data.profile, preferences } }); else { const result = await supabase.from("profiles").update({ preferences }).eq("id", auth.user.id); if (result.error) throw result.error; await refresh(); } notify("success", "Tampilan beranda disimpan."); } catch (err) { notify("error", err.message || "Preferensi belum tersimpan."); }
+      try { if (auth.mode !== "preview") { const result = await supabase.from("profiles").update({ preferences }).eq("id", auth.user.id); if (result.error) throw result.error; } commit((current) => ({ ...current, profile: { ...current.profile, preferences } })); notify("success", "Tampilan beranda disimpan."); } catch (err) { notify("error", err.message || "Preferensi belum tersimpan."); }
     },
     updateRole: async (role) => {
-      try { if (auth.mode === "preview") commit({ ...data, profile: { ...data.profile, role } }); else { const profile = await supabase.from("profiles").update({ role }).eq("id", auth.user.id); if (profile.error) throw profile.error; const assignment = await supabase.from("teacher_assignments").update({ mode: role, is_homeroom: role !== "guru_mapel" }).eq("school_id", data.school.id).eq("user_id", auth.user.id); if (assignment.error) throw assignment.error; await supabase.auth.updateUser({ data: { ...(auth.user.user_metadata || {}), role } }); await refresh(); } notify("success", "Mode kerja guru diperbarui."); } catch (err) { notify("error", err.message || "Mode kerja belum diperbarui."); }
+      try { if (auth.mode !== "preview") { const profile = await supabase.from("profiles").update({ role }).eq("id", auth.user.id); if (profile.error) throw profile.error; const assignment = await supabase.from("teacher_assignments").update({ mode: role, is_homeroom: role !== "guru_mapel" }).eq("school_id", data.school.id).eq("user_id", auth.user.id); if (assignment.error) throw assignment.error; await supabase.auth.updateUser({ data: { ...(auth.user.user_metadata || {}), role } }); } commit((current) => ({ ...current, profile: { ...current.profile, role } })); notify("success", "Mode kerja guru diperbarui."); } catch (err) { notify("error", err.message || "Mode kerja belum diperbarui."); }
     },
   };
 
@@ -630,6 +665,7 @@ function Workspace({ auth, onLogout }) {
 async function saveGradeRows(rows, data, auth, refresh, commit) {
   let added = 0; let skipped = 0;
   const localGrades = [...data.grades];
+  const savedGrades = [];
   const assessmentCache = {};
   for (const raw of rows) {
     const row = normalizeRow(raw);
@@ -671,9 +707,17 @@ async function saveGradeRows(rows, data, auth, refresh, commit) {
     if (!assessment) { skipped += 1; continue; }
     const scoreResult = await supabase.from("assessment_scores").upsert({ assessment_id: assessment.id, student_id: student.id, point, comment: grade.comment }, { onConflict: "assessment_id,student_id" });
     if (scoreResult.error) throw scoreResult.error;
+    savedGrades.push(grade);
     added += 1;
   }
-  if (auth.mode === "preview") commit({ ...data, grades: localGrades }); else await refresh();
+  if (auth.mode === "preview") commit((current) => ({ ...current, grades: localGrades }));
+  else if (rows.length === 1 && savedGrades.length) {
+    const saved = savedGrades[0];
+    commit((current) => {
+      const sameGrade = (item) => item.student_id === saved.student_id && text(item.assessment_title).toLowerCase() === text(saved.assessment_title).toLowerCase() && text(item.assessment_date) === text(saved.assessment_date) && text(item.subject_name).toLowerCase() === text(saved.subject_name).toLowerCase();
+      return { ...current, grades: current.grades.some(sameGrade) ? current.grades.map((item) => sameGrade(item) ? { ...item, ...saved } : item) : [...current.grades, saved] };
+    });
+  } else if (rows.length > 1) await refresh();
   return { added, skipped };
 }
 
@@ -724,20 +768,254 @@ async function askAssistant(prompt, data) {
   return payload.reply;
 }
 
-function ImportActions({ onImport, accept = ".xlsx,.xls,.csv" }) { const inputId = id("file"); return <div className="import-actions"><a className="secondary-button" href={TEMPLATE_URL} download><Download size={16} /> Unduh template</a><label className="primary-button file-button" htmlFor={inputId}><Upload size={16} /> Import file<input id={inputId} type="file" accept={accept} onChange={(event) => { const file = event.target.files?.[0]; if (file) onImport(file); event.target.value = ""; }} /></label></div>; }
+function ImportActions({ onImport, accept = ".xlsx,.xls,.csv" }) { const [inputId] = useState(() => id("file")); return <div className="import-actions"><a className="secondary-button" href={TEMPLATE_URL} download><Download size={16} /> Unduh template</a><label className="primary-button file-button" htmlFor={inputId}><Upload size={16} /> Import file<input id={inputId} type="file" accept={accept} onChange={(event) => { const file = event.target.files?.[0]; if (file) onImport(file); event.target.value = ""; }} /></label></div>; }
 
 function MasterDataPage({ data, onSaveClass, onSaveSubject, onSaveStudent, onImport }) {
-  const [classId, setClassId] = useState(data.classes[0]?.id || "all"); const [query, setQuery] = useState(""); const [editingClass, setEditingClass] = useState(null); const [editingStudent, setEditingStudent] = useState(null); const [showStudent, setShowStudent] = useState(false);
-  const blankStudent = { full_name: "", nickname: "", nis: "", nisn: "", gender: "", birth_date: "", address: "", phone: "", parent_phone: "", class_id: classId === "all" ? data.classes[0]?.id || "" : classId, active: true };
-  const [studentForm, setStudentForm] = useState(blankStudent); const [classForm, setClassForm] = useState({ name: "", grade_level: "", active: true });
-  const [subjectForm, setSubjectForm] = useState({ name: "", code: "" }); const [editingSubject, setEditingSubject] = useState(null);
-  const visible = data.students.filter((item) => (classId === "all" || item.class_id === classId) && (text(item.full_name) + " " + text(item.nickname) + " " + text(item.nis) + " " + text(item.nisn)).toLowerCase().includes(query.toLowerCase()));
-  const openStudent = (student = null) => { setEditingStudent(student?.id || null); setStudentForm(student ? { ...blankStudent, ...student } : { ...blankStudent, class_id: classId === "all" ? data.classes[0]?.id || "" : classId }); setShowStudent(true); };
-  const submitStudent = async (event) => { event.preventDefault(); if (!studentForm.full_name || !studentForm.class_id) return; await onSaveStudent(studentForm, editingStudent); setShowStudent(false); setEditingStudent(null); };
-  const editClass = (row) => { setEditingClass(row.id); setClassForm({ name: row.name, grade_level: row.grade_level || "", active: row.active !== false }); };
-  const submitClass = async (event) => { event.preventDefault(); if (!classForm.name) return; await onSaveClass(classForm, editingClass); setClassForm({ name: "", grade_level: "", active: true }); setEditingClass(null); };
-  const submitSubject = async (event) => { event.preventDefault(); if (!subjectForm.name) return; await onSaveSubject(subjectForm, editingSubject); setSubjectForm({ name: "", code: "" }); setEditingSubject(null); };
-  return <PageSection eyebrow="SUMBER DATA UTAMA" title="Master Data" action={<div className="section-actions"><ImportActions onImport={onImport} /><button className="primary-button" onClick={() => openStudent()}><Plus size={16} /> Tambah siswa</button></div>}><div className="helper-banner"><FileSpreadsheet size={18} /><span>Semua presensi dan nilai mengambil nama dari sini. Isi sheet MASTER_KELAS dan MASTER_SISWA pada template resmi.</span></div><div className="subject-manager panel"><div><p className="eyebrow">MATA PELAJARAN DIAMPU</p><div className="subject-chips">{data.subjects.map((row) => <button key={row.id} onClick={() => { setEditingSubject(row.id); setSubjectForm({ name: row.name, code: row.code || "" }); }}>{row.name}{row.code ? ` · ${row.code}` : ""}<Pencil size={12}/></button>)}</div></div><form onSubmit={submitSubject}><input value={subjectForm.name} onChange={(event) => setSubjectForm((current) => ({ ...current, name: event.target.value }))} placeholder="Tambah mata pelajaran"/><input value={subjectForm.code} onChange={(event) => setSubjectForm((current) => ({ ...current, code: event.target.value }))} placeholder="Kode (opsional)"/><button className="secondary-button"><Save size={14}/>{editingSubject ? "Simpan" : "Tambah"}</button></form></div><div className="master-layout"><aside className="class-manager"><div className="panel-head"><div><p className="eyebrow">DAFTAR KELAS</p><h3>{data.classes.length} kelas</h3></div></div><button className={classId === "all" ? "class-choice active" : "class-choice"} onClick={() => setClassId("all")}><span>Semua kelas</span><b>{data.students.length}</b></button>{data.classes.map((row) => <button key={row.id} className={classId === row.id ? "class-choice active" : "class-choice"} onClick={() => setClassId(row.id)}><span>{row.name}<small>Tingkat {row.grade_level || "-"}</small></span><b>{data.students.filter((item) => item.class_id === row.id).length}</b><i onClick={(event) => { event.stopPropagation(); editClass(row); }}><Pencil size={13}/></i></button>)}<form className="class-form" onSubmit={submitClass}><Field label={editingClass ? "Edit nama kelas" : "Tambah kelas"} value={classForm.name} onChange={(value) => setClassForm((current) => ({ ...current, name: value }))} placeholder="Contoh: 8B" /><Field label="Tingkat" value={classForm.grade_level} onChange={(value) => setClassForm((current) => ({ ...current, grade_level: value }))} placeholder="8" /><button className="secondary-button"><Save size={14}/>{editingClass ? "Simpan edit" : "Tambah kelas"}</button></form></aside><div className="master-content">{showStudent && <form className="inline-form student-editor" onSubmit={submitStudent}><div className="form-title"><div><p className="eyebrow">{editingStudent ? "EDIT SISWA" : "SISWA BARU"}</p><h3>Identitas siswa</h3></div><button className="icon-button" type="button" onClick={() => setShowStudent(false)}><X size={17}/></button></div><Field label="Nama lengkap" value={studentForm.full_name} onChange={(value) => setStudentForm((current) => ({ ...current, full_name: value }))} placeholder="Nama sesuai data sekolah" /><Field label="Nama panggilan" value={studentForm.nickname} onChange={(value) => setStudentForm((current) => ({ ...current, nickname: value }))} placeholder="Nama yang biasa dipakai" /><Field label="NIS" value={studentForm.nis} onChange={(value) => setStudentForm((current) => ({ ...current, nis: value }))} placeholder="Opsional" /><Field label="NISN" value={studentForm.nisn} onChange={(value) => setStudentForm((current) => ({ ...current, nisn: value }))} placeholder="Opsional" /><label className="field"><span>Kelas</span><select value={studentForm.class_id} onChange={(event) => setStudentForm((current) => ({ ...current, class_id: event.target.value }))}>{data.classes.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="field"><span>Jenis kelamin</span><select value={studentForm.gender || ""} onChange={(event) => setStudentForm((current) => ({ ...current, gender: event.target.value }))}><option value="">Pilih</option><option value="L">Laki-laki</option><option value="P">Perempuan</option></select></label><label className="field"><span>Tanggal lahir</span><input type="date" value={studentForm.birth_date || ""} onChange={(event) => setStudentForm((current) => ({ ...current, birth_date: event.target.value }))}/></label><Field label="Nomor HP siswa" value={studentForm.phone || ""} onChange={(value) => setStudentForm((current) => ({ ...current, phone: value }))} placeholder="Opsional" /><Field label="Nomor HP orang tua" value={studentForm.parent_phone || ""} onChange={(value) => setStudentForm((current) => ({ ...current, parent_phone: value }))} placeholder="Opsional" /><label className="field field-wide"><span>Alamat</span><textarea value={studentForm.address || ""} onChange={(event) => setStudentForm((current) => ({ ...current, address: event.target.value }))} rows="2" placeholder="Alamat tempat tinggal" /></label><button className="primary-button"><Save size={15}/> Simpan data siswa</button></form>}<div className="toolbar"><div className="search-box"><Search size={16}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari nama, panggilan, NIS, atau NISN…"/></div><span className="result-count">{visible.length} siswa</span></div><div className="table-card">{visible.length === 0 ? <EmptyState title="Belum ada siswa di kelas ini" desc="Tambahkan manual atau import template Master Data."/> : visible.map((student) => <div className="data-row student-row" key={student.id}><span className="person-avatar">{avatarName(student.full_name)}</span><div className="person-copy"><strong>{student.full_name}{student.nickname && <em>“{student.nickname}”</em>}</strong><small>{student.nisn || "NISN belum diisi"} · {student.class_name || data.classes.find((row) => row.id === student.class_id)?.name || "Belum ada kelas"}</small></div><span className="row-meta">{ageFromBirthDate(student.birth_date)}</span><span className="row-meta phone-meta"><Phone size={13}/>{student.phone || student.parent_phone || "-"}</span><button className="row-action" onClick={() => openStudent(student)}><Pencil size={15}/> Edit</button></div>)}</div></div></div></PageSection>;
+  const firstClassId = data.classes[0]?.id || "";
+  const [classId, setClassId] = useState(firstClassId || "all");
+  const [query, setQuery] = useState("");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalType, setModalType] = useState("student");
+  const [editingId, setEditingId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState("idle");
+  const [formError, setFormError] = useState("");
+  const selectedClassId = classId === "all" ? firstClassId : classId;
+  const blankStudent = () => ({ full_name: "", nickname: "", nis: "", nisn: "", gender: "", birth_date: "", address: "", phone: "", parent_phone: "", class_id: selectedClassId || firstClassId, active: true });
+  const blankClass = () => ({ name: "", grade_level: "", active: true });
+  const blankSubject = () => ({ name: "", code: "" });
+  const [studentForm, setStudentForm] = useState(blankStudent);
+  const [classForm, setClassForm] = useState(blankClass);
+  const [subjectForm, setSubjectForm] = useState(blankSubject);
+
+  const classById = useMemo(() => new Map(data.classes.map((row) => [row.id, row])), [data.classes]);
+  const studentCountByClass = useMemo(() => {
+    const counts = new Map();
+    data.students.forEach((student) => counts.set(student.class_id, (counts.get(student.class_id) || 0) + 1));
+    return counts;
+  }, [data.students]);
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return data.students.filter((item) => {
+      if (classId !== "all" && item.class_id !== classId) return false;
+      if (!needle) return true;
+      return [item.full_name, item.nickname, item.nis, item.nisn].map(text).join(" ").toLowerCase().includes(needle);
+    });
+  }, [data.students, classId, query]);
+
+  const resetModal = (type) => {
+    setEditingId(null);
+    setFormError("");
+    setSaveState("idle");
+    if (type === "student") setStudentForm(blankStudent());
+    if (type === "class") setClassForm(blankClass());
+    if (type === "subject") setSubjectForm(blankSubject());
+  };
+  const openCreate = (type = "student") => {
+    setModalType(type);
+    resetModal(type);
+    setModalOpen(true);
+  };
+  const switchType = (type) => {
+    if (saving || type === modalType) return;
+    setModalType(type);
+    resetModal(type);
+  };
+  const openEditStudent = (student) => {
+    setModalType("student");
+    setEditingId(student.id);
+    setStudentForm({ ...blankStudent(), ...student, class_id: student.class_id || selectedClassId || firstClassId });
+    setFormError("");
+    setSaveState("idle");
+    setModalOpen(true);
+  };
+  const openEditClass = (row) => {
+    setModalType("class");
+    setEditingId(row.id);
+    setClassForm({ name: row.name, grade_level: row.grade_level || "", active: row.active !== false });
+    setFormError("");
+    setSaveState("idle");
+    setModalOpen(true);
+  };
+  const openEditSubject = (row) => {
+    setModalType("subject");
+    setEditingId(row.id);
+    setSubjectForm({ name: row.name, code: row.code || "" });
+    setFormError("");
+    setSaveState("idle");
+    setModalOpen(true);
+  };
+  const closeModal = () => {
+    if (saving) return;
+    setModalOpen(false);
+    setFormError("");
+    setSaveState("idle");
+  };
+
+  useEffect(() => {
+    if (!modalOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const onKeyDown = (event) => { if (event.key === "Escape" && !saving) closeModal(); };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [modalOpen, saving]);
+
+  const submitModal = async (event) => {
+    event.preventDefault();
+    if (saving || saveState === "success") return;
+    setFormError("");
+
+    if (modalType === "student") {
+      if (!studentForm.full_name.trim()) return setFormError("Nama lengkap siswa wajib diisi.");
+      if (!studentForm.class_id) return setFormError("Tambahkan kelas terlebih dahulu, lalu pilih kelas siswa.");
+      const duplicateNisn = studentForm.nisn && data.students.some((row) => row.id !== editingId && text(row.nisn) === text(studentForm.nisn));
+      if (duplicateNisn) return setFormError("NISN tersebut sudah dipakai oleh siswa lain.");
+    }
+    if (modalType === "class") {
+      if (!classForm.name.trim()) return setFormError("Nama kelas wajib diisi.");
+      if (data.classes.some((row) => row.id !== editingId && text(row.name).toLowerCase() === text(classForm.name).toLowerCase())) return setFormError("Kelas dengan nama tersebut sudah tersedia.");
+    }
+    if (modalType === "subject") {
+      if (!subjectForm.name.trim()) return setFormError("Nama mata pelajaran wajib diisi.");
+      if (data.subjects.some((row) => row.id !== editingId && text(row.name).toLowerCase() === text(subjectForm.name).toLowerCase())) return setFormError("Mata pelajaran tersebut sudah tersedia.");
+    }
+
+    setSaving(true);
+    setSaveState("saving");
+    try {
+      if (modalType === "student") await onSaveStudent(studentForm, editingId);
+      if (modalType === "class") await onSaveClass(classForm, editingId);
+      if (modalType === "subject") await onSaveSubject(subjectForm, editingId);
+      setSaveState("success");
+      window.setTimeout(() => {
+        setModalOpen(false);
+        setSaveState("idle");
+        setSaving(false);
+      }, 700);
+    } catch (error) {
+      setFormError(error.message || "Data belum dapat disimpan. Coba lagi.");
+      setSaveState("error");
+      setSaving(false);
+    }
+  };
+
+  const modalCopy = {
+    student: {
+      eyebrow: editingId ? "EDIT DATA SISWA" : "SISWA BARU",
+      title: editingId ? "Perbarui identitas siswa" : "Tambahkan siswa",
+      description: "Data ini menjadi sumber nama untuk presensi, penilaian, jurnal, dan rekap.",
+      saveLabel: editingId ? "Simpan perubahan siswa" : "Simpan siswa",
+    },
+    class: {
+      eyebrow: editingId ? "EDIT KELAS" : "KELAS BARU",
+      title: editingId ? "Perbarui data kelas" : "Tambahkan kelas",
+      description: "Kelas memisahkan daftar siswa, presensi, nilai, dan agenda mengajar.",
+      saveLabel: editingId ? "Simpan perubahan kelas" : "Simpan kelas",
+    },
+    subject: {
+      eyebrow: editingId ? "EDIT MATA PELAJARAN" : "MATA PELAJARAN BARU",
+      title: editingId ? "Perbarui mata pelajaran" : "Tambahkan mata pelajaran",
+      description: "Mata pelajaran digunakan pada presensi mapel, penilaian, jurnal, dan agenda.",
+      saveLabel: editingId ? "Simpan perubahan mapel" : "Simpan mata pelajaran",
+    },
+  }[modalType];
+
+  return <PageSection
+    eyebrow="SUMBER DATA UTAMA"
+    title="Master Data"
+    action={<div className="section-actions"><ImportActions onImport={onImport} /><button className="primary-button" onClick={() => openCreate("student")}><Plus size={16} /> Tambah master data</button></div>}
+  >
+    <div className="helper-banner"><FileSpreadsheet size={18} /><span>Kelola kelas, siswa, dan mata pelajaran dari satu tempat. Data yang disimpan langsung tersedia di presensi, nilai, jurnal, dan agenda.</span></div>
+
+    <div className="master-summary" aria-label="Ringkasan Master Data">
+      <button className="master-summary-card" onClick={() => openCreate("student")}><span className="summary-icon purple"><Users size={18}/></span><div><strong>{data.students.length}</strong><small>Siswa</small></div><Plus size={16}/></button>
+      <button className="master-summary-card" onClick={() => openCreate("class")}><span className="summary-icon blue"><GraduationCap size={18}/></span><div><strong>{data.classes.length}</strong><small>Kelas</small></div><Plus size={16}/></button>
+      <button className="master-summary-card" onClick={() => openCreate("subject")}><span className="summary-icon amber"><BookOpen size={18}/></span><div><strong>{data.subjects.length}</strong><small>Mata pelajaran</small></div><Plus size={16}/></button>
+    </div>
+
+    <div className="subject-overview panel">
+      <div className="panel-head"><div><p className="eyebrow">MATA PELAJARAN DIAMPU</p><h3>{data.subjects.length ? "Daftar mata pelajaran" : "Belum ada mata pelajaran"}</h3></div><button className="text-button" onClick={() => openCreate("subject")}><Plus size={14}/> Tambah</button></div>
+      <div className="subject-chips">{data.subjects.length ? data.subjects.map((row) => <button key={row.id} onClick={() => openEditSubject(row)}>{row.name}{row.code ? " · " + row.code : ""}<Pencil size={12}/></button>) : <span className="empty-inline">Tambahkan mapel agar penilaian dan agenda dapat dihubungkan.</span>}</div>
+    </div>
+
+    <div className="master-layout">
+      <aside className="class-manager">
+        <div className="panel-head"><div><p className="eyebrow">DAFTAR KELAS</p><h3>{data.classes.length} kelas</h3></div><button className="icon-button compact" aria-label="Tambah kelas" onClick={() => openCreate("class")}><Plus size={16}/></button></div>
+        <button className={classId === "all" ? "class-choice active" : "class-choice"} onClick={() => setClassId("all")}><span>Semua kelas<small>Seluruh siswa</small></span><b>{data.students.length}</b></button>
+        {data.classes.map((row) => <div className={classId === row.id ? "class-choice-wrap active" : "class-choice-wrap"} key={row.id}>
+          <button className="class-choice" onClick={() => setClassId(row.id)}><span>{row.name}<small>Tingkat {row.grade_level || "-"}</small></span><b>{studentCountByClass.get(row.id) || 0}</b></button>
+          <button className="class-edit-button" aria-label={"Edit kelas " + row.name} onClick={() => openEditClass(row)}><Pencil size={13}/></button>
+        </div>)}
+      </aside>
+
+      <div className="master-content">
+        <div className="toolbar"><div className="search-box"><Search size={16}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari nama, panggilan, NIS, atau NISN…"/></div><span className="result-count">{visible.length} siswa</span></div>
+        <div className="table-card">{visible.length === 0 ? <EmptyState title="Belum ada siswa di kelas ini" desc="Tekan Tambah master data atau import template resmi."/> : visible.map((student) => <div className="data-row student-row" key={student.id}>
+          <span className="person-avatar">{avatarName(student.full_name)}</span>
+          <div className="person-copy"><strong>{student.full_name}{student.nickname && <em>“{student.nickname}”</em>}</strong><small>{student.nisn || "NISN belum diisi"} · {student.class_name || classById.get(student.class_id)?.name || "Belum ada kelas"}</small></div>
+          <span className="row-meta">{ageFromBirthDate(student.birth_date)}</span>
+          <span className="row-meta phone-meta"><Phone size={13}/>{student.phone || student.parent_phone || "-"}</span>
+          <button className="row-action" onClick={() => openEditStudent(student)}><Pencil size={15}/> Edit</button>
+        </div>)}</div>
+      </div>
+    </div>
+
+    {modalOpen && <div className="master-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
+      <section className="master-modal" role="dialog" aria-modal="true" aria-labelledby="master-modal-title">
+        <div className="master-modal-head">
+          <div><p className="eyebrow">TAMBAH MASTER DATA</p><h2 id="master-modal-title">Pilih data yang ingin dikelola</h2></div>
+          <button className="icon-button" type="button" aria-label="Tutup popup" onClick={closeModal} disabled={saving}><X size={18}/></button>
+        </div>
+        <div className="master-modal-tabs" role="tablist" aria-label="Jenis Master Data">
+          <button type="button" role="tab" aria-selected={modalType === "student"} className={modalType === "student" ? "active" : ""} onClick={() => switchType("student")} disabled={saving}><Users size={17}/><span>Tambah siswa</span></button>
+          <button type="button" role="tab" aria-selected={modalType === "class"} className={modalType === "class" ? "active" : ""} onClick={() => switchType("class")} disabled={saving}><GraduationCap size={17}/><span>Tambah kelas</span></button>
+          <button type="button" role="tab" aria-selected={modalType === "subject"} className={modalType === "subject" ? "active" : ""} onClick={() => switchType("subject")} disabled={saving}><BookOpen size={17}/><span>Tambah mata pelajaran</span></button>
+        </div>
+
+        <form className="master-modal-form" onSubmit={submitModal}>
+          <div className="master-modal-copy"><span className={"summary-icon " + (modalType === "student" ? "purple" : modalType === "class" ? "blue" : "amber")}>{modalType === "student" ? <Users size={18}/> : modalType === "class" ? <GraduationCap size={18}/> : <BookOpen size={18}/>}</span><div><p className="eyebrow">{modalCopy.eyebrow}</p><h3>{modalCopy.title}</h3><p>{modalCopy.description}</p></div></div>
+          {formError && <div className="form-notice error" role="alert">{formError}</div>}
+
+          <div className="master-modal-body">
+            {modalType === "student" && <>
+              {data.classes.length === 0 && <div className="form-notice warning">Belum ada kelas. Pilih tab Tambah kelas dan simpan kelas pertama terlebih dahulu.</div>}
+              <div className="master-form-grid">
+                <Field label="Nama lengkap" value={studentForm.full_name} onChange={(value) => setStudentForm((current) => ({ ...current, full_name: value }))} placeholder="Nama sesuai data sekolah" />
+                <Field label="Nama panggilan" value={studentForm.nickname} onChange={(value) => setStudentForm((current) => ({ ...current, nickname: value }))} placeholder="Nama yang biasa dipakai" />
+                <Field label="NIS" value={studentForm.nis} onChange={(value) => setStudentForm((current) => ({ ...current, nis: value }))} placeholder="Opsional" />
+                <Field label="NISN" value={studentForm.nisn} onChange={(value) => setStudentForm((current) => ({ ...current, nisn: value }))} placeholder="Opsional" />
+                <label className="field"><span>Kelas</span><select value={studentForm.class_id} onChange={(event) => setStudentForm((current) => ({ ...current, class_id: event.target.value }))}><option value="">Pilih kelas</option>{data.classes.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
+                <label className="field"><span>Jenis kelamin</span><select value={studentForm.gender || ""} onChange={(event) => setStudentForm((current) => ({ ...current, gender: event.target.value }))}><option value="">Pilih</option><option value="L">Laki-laki</option><option value="P">Perempuan</option></select></label>
+                <label className="field"><span>Tanggal lahir</span><input type="date" value={studentForm.birth_date || ""} onChange={(event) => setStudentForm((current) => ({ ...current, birth_date: event.target.value }))}/></label>
+                <Field label="Nomor HP siswa" value={studentForm.phone || ""} onChange={(value) => setStudentForm((current) => ({ ...current, phone: value }))} placeholder="Opsional" />
+                <Field label="Nomor HP orang tua" value={studentForm.parent_phone || ""} onChange={(value) => setStudentForm((current) => ({ ...current, parent_phone: value }))} placeholder="Opsional" />
+                <label className="field field-wide"><span>Alamat</span><textarea value={studentForm.address || ""} onChange={(event) => setStudentForm((current) => ({ ...current, address: event.target.value }))} rows="2" placeholder="Alamat tempat tinggal" /></label>
+              </div>
+            </>}
+            {modalType === "class" && <div className="master-form-grid compact-grid">
+              <Field label="Nama kelas" value={classForm.name} onChange={(value) => setClassForm((current) => ({ ...current, name: value }))} placeholder="Contoh: 8B" />
+              <Field label="Tingkat" value={classForm.grade_level} onChange={(value) => setClassForm((current) => ({ ...current, grade_level: value }))} placeholder="Contoh: 8" />
+            </div>}
+            {modalType === "subject" && <div className="master-form-grid compact-grid">
+              <Field label="Nama mata pelajaran" value={subjectForm.name} onChange={(value) => setSubjectForm((current) => ({ ...current, name: value }))} placeholder="Contoh: Matematika" />
+              <Field label="Kode mapel" value={subjectForm.code} onChange={(value) => setSubjectForm((current) => ({ ...current, code: value }))} placeholder="Opsional, contoh: MTK" />
+            </div>}
+          </div>
+
+          <div className="master-modal-actions">
+            <button className="secondary-button" type="button" onClick={closeModal} disabled={saving}>Batal</button>
+            <button className={"primary-button master-save-button " + (saveState === "success" ? "is-success" : "")} type="submit" disabled={saving || (modalType === "student" && data.classes.length === 0)}>
+              {saveState === "saving" ? <><LoaderCircle className="spin" size={17}/> Menyimpan…</> : saveState === "success" ? <><CheckCircle2 size={17}/> Berhasil disimpan</> : <><Save size={16}/>{modalCopy.saveLabel}</>}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>}
+  </PageSection>;
 }
 
 function AttendancePage({ data, onSave, onImport }) {
