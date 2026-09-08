@@ -382,15 +382,19 @@ function downloadBlob(filename, blob) {
   window.setTimeout(() => URL.revokeObjectURL(url), 500);
 }
 
-async function saveRowsAsExcel(filename, rows, sheetName = "Rekap") {
+async function saveRowsAsExcel(filename, rows, sheetName = "Rekap", summaryRows = []) {
   const XLSX = await import("xlsx");
   const workbook = XLSX.utils.book_new();
   const sheet = XLSX.utils.json_to_sheet(reportExportRows(rows));
   XLSX.utils.book_append_sheet(workbook, sheet, sheetName.slice(0, 31));
+  if (summaryRows.length) {
+    const summarySheet = XLSX.utils.json_to_sheet(reportExportRows(summaryRows));
+    XLSX.utils.book_append_sheet(workbook, summarySheet, "Rata-rata Siswa");
+  }
   XLSX.writeFile(workbook, filename);
 }
 
-function saveRowsAsWord(filename, title, rows) {
+function saveRowsAsWord(filename, title, rows, summaryRows = [], periodLabel = "") {
   const headers = reportHeaders(rows);
   const escapeHtml = (value) =>
     text(value)
@@ -398,14 +402,16 @@ function saveRowsAsWord(filename, title, rows) {
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
   const tableRows = rows.length ? rows : [{ keterangan: "Belum ada data" }];
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>@page{size:A4 landscape;margin:18mm}body{font-family:Arial,sans-serif;color:#172238}header{border-bottom:3px solid #7726aa;padding-bottom:12px}h1{font-size:22px;margin:0 0 6px}p{color:#596579;margin:0}table{width:100%;border-collapse:collapse;margin-top:22px;font-size:10px}th,td{border:1px solid #cfd6e2;padding:7px;text-align:left;vertical-align:top}th{background:#eef2f8;text-transform:capitalize}.footer{margin-top:22px;font-size:9px;color:#788397}</style></head><body><header><h1>${escapeHtml(title)}</h1><p>Bantu Beres Buku Kerja Digital · Dicetak ${escapeHtml(new Date().toLocaleDateString("id-ID"))}</p></header><table><thead><tr><th>No.</th>${headers.map((header) => `<th>${escapeHtml(header.replace(/_/g, " "))}</th>`).join("")}</tr></thead><tbody>${tableRows.map((row,index) => `<tr><td>${index+1}</td>${headers.map((header) => `<td>${escapeHtml(row[header])}</td>`).join("")}</tr>`).join("")}</tbody></table><p class="footer">Jumlah data: ${rows.length}</p></body></html>`;
+  const summaryHeaders = reportHeaders(summaryRows);
+  const summaryTable = summaryRows.length ? `<h2>Rata-rata setiap siswa</h2><table><thead><tr><th>No.</th>${summaryHeaders.map((header) => `<th>${escapeHtml(header.replace(/_/g, " "))}</th>`).join("")}</tr></thead><tbody>${summaryRows.map((row,index) => `<tr><td>${index+1}</td>${summaryHeaders.map((header) => `<td>${escapeHtml(row[header])}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "";
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>@page{size:A4 landscape;margin:18mm}body{font-family:Arial,sans-serif;color:#172238}header{border-bottom:3px solid #7726aa;padding-bottom:12px}h1{font-size:22px;margin:0 0 6px}h2{font-size:15px;margin:24px 0 -10px}p{color:#596579;margin:0}table{width:100%;border-collapse:collapse;margin-top:22px;font-size:10px}th,td{border:1px solid #cfd6e2;padding:7px;text-align:left;vertical-align:top}th{background:#eef2f8;text-transform:capitalize}.footer{margin-top:22px;font-size:9px;color:#788397}</style></head><body><header><h1>${escapeHtml(title)}</h1><p>${escapeHtml(periodLabel)} · Bantu Beres Buku Kerja Digital · Dicetak ${escapeHtml(new Date().toLocaleDateString("id-ID"))}</p></header>${summaryTable}<h2>Data rinci</h2><table><thead><tr><th>No.</th>${headers.map((header) => `<th>${escapeHtml(header.replace(/_/g, " "))}</th>`).join("")}</tr></thead><tbody>${tableRows.map((row,index) => `<tr><td>${index+1}</td>${headers.map((header) => `<td>${escapeHtml(row[header])}</td>`).join("")}</tr>`).join("")}</tbody></table><p class="footer">Jumlah data: ${rows.length}</p></body></html>`;
   downloadBlob(
     filename,
     new Blob(["\ufeff", html], { type: "application/msword;charset=utf-8" }),
   );
 }
 
-async function saveRowsAsPdf(filename, title, rows) {
+async function saveRowsAsPdf(filename, title, rows, summaryRows = [], periodLabel = "") {
   const { jsPDF } = await import("jspdf");
   const documentPdf = new jsPDF({
     orientation: "landscape",
@@ -418,7 +424,7 @@ async function saveRowsAsPdf(filename, title, rows) {
   documentPdf.text(title, 14, 16);
   documentPdf.setFont("helvetica", "normal");
   documentPdf.setFontSize(8);
-  documentPdf.text("Bantu Beres Buku Kerja Digital", 14, 22);
+  documentPdf.text(`${periodLabel}${periodLabel ? " · " : ""}Bantu Beres Buku Kerja Digital`, 14, 22);
   let y = 30;
   const renderLine = (values, bold = false) => {
     documentPdf.setFont("helvetica", bold ? "bold" : "normal");
@@ -436,6 +442,24 @@ async function saveRowsAsPdf(filename, title, rows) {
     documentPdf.text(wrapped, 14, y);
     y += wrapped.length * 4 + 2;
   };
+  if (summaryRows.length) {
+    documentPdf.setFont("helvetica", "bold");
+    documentPdf.text("Rata-rata setiap siswa", 14, y);
+    y += 6;
+    const summaryHeaders = reportHeaders(summaryRows);
+    summaryRows.forEach((row) => {
+      const line = summaryHeaders.map((header) => `${header.replace(/_/g, " ")}: ${text(row[header])}`).join("   |   ");
+      const wrapped = documentPdf.splitTextToSize(line, 268);
+      if (y + wrapped.length * 4 > 195) { documentPdf.addPage(); y = 16; }
+      documentPdf.setFont("helvetica", "normal");
+      documentPdf.text(wrapped, 14, y);
+      y += wrapped.length * 4 + 2;
+    });
+    y += 3;
+    documentPdf.setFont("helvetica", "bold");
+    documentPdf.text("Data rinci", 14, y);
+    y += 6;
+  }
   if (!rows.length) renderLine(["Belum ada data"], false);
   else rows.forEach((row) => renderLine(headers.map((header) => row[header])));
   documentPdf.save(filename);
@@ -5674,8 +5698,12 @@ function ReportsPage({ data, setActive, onDelete }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [periodMode, setPeriodMode] = useState("month");
+  const [periodValue, setPeriodValue] = useState(today().slice(0, 7));
   const attendanceRows = data.attendance.map((row) => ({
     _sourceId: row.id,
+    _studentId: row.student_id,
+    _status: row.status,
     tanggal: row.attendance_date,
     kelas: data.classes.find((item) => item.id === row.class_id)?.name || "",
     siswa:
@@ -5688,6 +5716,9 @@ function ReportsPage({ data, setActive, onDelete }) {
   }));
   const gradeRows = data.grades.map((row) => ({
     _sourceId: row.id,
+    _studentId: row.student_id,
+    _percentage:
+      (Number(row.point) / Math.max(1, Number(row.max_point || 100))) * 100,
     tanggal: row.assessment_date || "",
     kelas: row.class_name || "",
     siswa: row.student_name || "",
@@ -5706,25 +5737,63 @@ function ReportsPage({ data, setActive, onDelete }) {
       .length,
     status: row.active === false ? "Tidak aktif" : "Aktif",
   }));
-  const journalRows = data.journals.map((row) => ({
-    _sourceId: row.id,
-    tanggal: row.journal_date,
-    kelas: data.classes.find((item) => item.id === row.class_id)?.name || "",
-    mata_pelajaran:
-      data.subjects.find((item) => item.id === row.subject_id)?.name || "Umum",
-    topik: row.topic || "",
-    aktivitas: row.activity || "",
-    refleksi: row.reflection || "",
-    tindak_lanjut: row.follow_up || "",
-  }));
+  const safePeriodValue = periodValue || (periodMode === "day" ? today() : today().slice(0, 7));
+  const matchesPeriod = (row) =>
+    periodMode === "day"
+      ? row.tanggal === safePeriodValue
+      : text(row.tanggal).startsWith(safePeriodValue);
+  const filteredAttendanceRows = attendanceRows.filter(matchesPeriod);
+  const filteredGradeRows = gradeRows.filter(matchesPeriod);
+  const periodLabel = periodMode === "day"
+    ? new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "long", year: "numeric" }).format(new Date(`${safePeriodValue}T12:00:00`))
+    : new Intl.DateTimeFormat("id-ID", { month: "long", year: "numeric" }).format(new Date(`${safePeriodValue}-01T12:00:00`));
+  const attendancePresent = filteredAttendanceRows.filter((row) => row._status === "H").length;
+  const attendanceRate = filteredAttendanceRows.length
+    ? Math.round((attendancePresent / filteredAttendanceRows.length) * 1000) / 10
+    : 0;
+  const attendanceByStudent = Array.from(
+    filteredAttendanceRows.reduce((groups, row) => {
+      const key = row._studentId || row.siswa;
+      const current = groups.get(key) || { siswa: row.siswa || "Tanpa nama", kelas: row.kelas || "-", hadir: 0, sakit: 0, izin: 0, alpa: 0, total: 0 };
+      current.total += 1;
+      if (row._status === "H") current.hadir += 1;
+      if (row._status === "S") current.sakit += 1;
+      if (row._status === "I") current.izin += 1;
+      if (row._status === "A") current.alpa += 1;
+      groups.set(key, current);
+      return groups;
+    }, new Map()).values(),
+  ).map((row) => ({ ...row, rata_rata_kehadiran: row.total ? `${Math.round((row.hadir / row.total) * 1000) / 10}%` : "0%" }));
+  const validGradeRows = filteredGradeRows.filter((row) => Number.isFinite(row._percentage));
+  const overallGradeAverage = validGradeRows.length
+    ? Math.round((validGradeRows.reduce((sum, row) => sum + row._percentage, 0) / validGradeRows.length) * 10) / 10
+    : 0;
+  const gradeByStudent = Array.from(
+    validGradeRows.reduce((groups, row) => {
+      const key = row._studentId || row.siswa;
+      const current = groups.get(key) || { siswa: row.siswa || "Tanpa nama", kelas: row.kelas || "-", jumlah_penilaian: 0, total_persentase: 0 };
+      current.jumlah_penilaian += 1;
+      current.total_persentase += row._percentage;
+      groups.set(key, current);
+      return groups;
+    }, new Map()).values(),
+  ).map((row) => ({ siswa: row.siswa, kelas: row.kelas, jumlah_penilaian: row.jumlah_penilaian, rata_rata_nilai: Math.round((row.total_persentase / row.jumlah_penilaian) * 10) / 10 }));
   const reports = [
     {
       id: "attendance",
       icon: CalendarCheck2,
       title: "Rekap presensi",
-      value: `${attendanceRows.length} catatan`,
-      desc: "Semua kehadiran siswa yang sudah dicatat.",
-      rows: attendanceRows,
+      value: `${filteredAttendanceRows.length} catatan`,
+      cardValue: `${attendanceRows.length} catatan`,
+      desc: "Rekap harian atau bulanan beserta rata-rata kehadiran.",
+      rows: filteredAttendanceRows,
+      summaryRows: attendanceByStudent,
+      summaryCards: [
+        { label: "Rata-rata kehadiran", value: `${attendanceRate}%`, meta: `${attendancePresent} hadir dari ${filteredAttendanceRows.length} catatan` },
+        { label: "Siswa tercatat", value: attendanceByStudent.length, meta: periodLabel },
+        { label: "Tidak hadir", value: filteredAttendanceRows.length - attendancePresent, meta: "Sakit, izin, dan alpa" },
+      ],
+      filterable: true,
       file: "rekap-presensi",
       sheet: "Presensi",
       editPage: "attendance",
@@ -5734,9 +5803,17 @@ function ReportsPage({ data, setActive, onDelete }) {
       id: "grades",
       icon: ClipboardList,
       title: "Rekap penilaian",
-      value: `${gradeRows.length} nilai`,
-      desc: "Nilai, tugas, dan catatan ketuntasan siswa.",
-      rows: gradeRows,
+      value: `${filteredGradeRows.length} nilai`,
+      cardValue: `${gradeRows.length} nilai`,
+      desc: "Rekap harian atau bulanan dan rata-rata setiap siswa.",
+      rows: filteredGradeRows,
+      summaryRows: gradeByStudent,
+      summaryCards: [
+        { label: "Rata-rata keseluruhan", value: overallGradeAverage, meta: "Skala 0–100" },
+        { label: "Siswa dinilai", value: gradeByStudent.length, meta: periodLabel },
+        { label: "Jumlah penilaian", value: filteredGradeRows.length, meta: "Pada periode terpilih" },
+      ],
+      filterable: true,
       file: "rekap-penilaian",
       sheet: "Penilaian",
       editPage: "grades",
@@ -5747,6 +5824,7 @@ function ReportsPage({ data, setActive, onDelete }) {
       icon: GraduationCap,
       title: "Cakupan kelas",
       value: `${classRows.length} kelas`,
+      cardValue: `${classRows.length} kelas`,
       desc: "Daftar kelas dan jumlah siswa yang dinaungi.",
       rows: classRows,
       file: "rekap-kelas",
@@ -5754,20 +5832,10 @@ function ReportsPage({ data, setActive, onDelete }) {
       editPage: "master",
       deleteKind: "class",
     },
-    {
-      id: "journals",
-      icon: BookOpen,
-      title: "Jurnal mengajar",
-      value: `${journalRows.length} catatan`,
-      desc: "Topik, aktivitas, refleksi, dan tindak lanjut.",
-      rows: journalRows,
-      file: "rekap-jurnal",
-      sheet: "Jurnal",
-      editPage: "journal",
-      deleteKind: "journal",
-    },
   ];
   const report = reports.find((item) => item.id === selected);
+  const reportPeriodLabel = report?.filterable ? periodLabel : "";
+  const reportFileSuffix = report?.filterable ? `-${safePeriodValue}` : "";
   if (report)
     return (
       <PageSection
@@ -5782,10 +5850,37 @@ function ReportsPage({ data, setActive, onDelete }) {
           </button>
         }
       >
+        {report.filterable && (
+          <div className="report-period-panel">
+            <div>
+              <p className="eyebrow">PERIODE LAPORAN</p>
+              <strong>{periodLabel}</strong>
+            </div>
+            <div className="period-mode-tabs" role="group" aria-label="Jenis periode rekap">
+              <button className={periodMode === "month" ? "active" : ""} onClick={() => { setPeriodMode("month"); setPeriodValue(text(periodValue).slice(0, 7) || today().slice(0, 7)); }}>Bulanan</button>
+              <button className={periodMode === "day" ? "active" : ""} onClick={() => { setPeriodMode("day"); setPeriodValue(periodValue.length === 10 ? periodValue : today()); }}>Harian</button>
+            </div>
+            <label className="period-picker">
+              <span>{periodMode === "month" ? "Pilih bulan" : "Pilih tanggal"}</span>
+              <input type={periodMode === "month" ? "month" : "date"} value={periodValue} onChange={(event) => setPeriodValue(event.target.value)} />
+            </label>
+          </div>
+        )}
+        {report.summaryCards?.length ? (
+          <div className="report-summary-grid">
+            {report.summaryCards.map((item) => <article key={item.label}><span>{item.label}</span><strong>{item.value}</strong><small>{item.meta}</small></article>)}
+          </div>
+        ) : null}
+        {report.summaryRows?.length ? (
+          <details className="student-average-panel" open>
+            <summary><div><p className="eyebrow">RANGKUMAN SISWA</p><strong>Rata-rata setiap siswa</strong></div><ChevronDown size={18}/></summary>
+            <ReportTable rows={report.summaryRows} />
+          </details>
+        ) : null}
         <div className="report-detail-toolbar">
           <div>
             <strong>{report.value}</strong>
-            <span>Semua data tersimpan ditampilkan di halaman ini.</span>
+            <span>Data rinci untuk {reportPeriodLabel || "seluruh kelas"}.</span>
           </div>
           <div className="report-actions">
             <button
@@ -5804,9 +5899,10 @@ function ReportsPage({ data, setActive, onDelete }) {
               className="secondary-button"
               onClick={() =>
                 saveRowsAsExcel(
-                  `${report.file}.xlsx`,
+                  `${report.file}${reportFileSuffix}.xlsx`,
                   report.rows,
                   report.sheet,
+                  report.summaryRows || [],
                 )
               }
             >
@@ -5815,7 +5911,7 @@ function ReportsPage({ data, setActive, onDelete }) {
             <button
               className="secondary-button"
               onClick={() =>
-                saveRowsAsPdf(`${report.file}.pdf`, report.title, report.rows)
+                saveRowsAsPdf(`${report.file}${reportFileSuffix}.pdf`, report.title, report.rows, report.summaryRows || [], reportPeriodLabel)
               }
             >
               <FileText size={16} /> PDF
@@ -5823,14 +5919,14 @@ function ReportsPage({ data, setActive, onDelete }) {
             <button
               className="secondary-button"
               onClick={() =>
-                saveRowsAsWord(`${report.file}.doc`, report.title, report.rows)
+                saveRowsAsWord(`${report.file}${reportFileSuffix}.doc`, report.title, report.rows, report.summaryRows || [], reportPeriodLabel)
               }
             >
               <FileText size={16} /> Word
             </button>
             <button
               className="primary-button"
-              onClick={() => saveRowsAsCsv(`${report.file}.csv`, report.rows)}
+              onClick={() => saveRowsAsCsv(`${report.file}${reportFileSuffix}.csv`, report.rows)}
             >
               <Download size={16} /> CSV
             </button>
@@ -5843,6 +5939,7 @@ function ReportsPage({ data, setActive, onDelete }) {
         {previewOpen && (
           <ReportPreview
             report={report}
+            periodLabel={reportPeriodLabel}
             onClose={() => setPreviewOpen(false)}
           />
         )}
@@ -5880,6 +5977,7 @@ function ReportsPage({ data, setActive, onDelete }) {
           <ReportCard
             key={item.id}
             {...item}
+            value={item.cardValue}
             onClick={() => setSelected(item.id)}
           />
         ))}
@@ -5946,7 +6044,7 @@ function ReportTable({ rows, compact = false, onDeleteRow = null }) {
   );
 }
 
-function ReportPreview({ report, onClose }) {
+function ReportPreview({ report, periodLabel, onClose }) {
   return createPortal(
     <div
       className="master-modal-backdrop"
@@ -5981,8 +6079,10 @@ function ReportPreview({ report, onClose }) {
             <section className="report-paper-title">
               <p>REKAP DATA</p>
               <h2>{report.title}</h2>
-              <span>Dicetak {new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "long", year: "numeric" }).format(new Date())} · {report.value}</span>
+              <span>{periodLabel ? `${periodLabel} · ` : ""}Dicetak {new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "long", year: "numeric" }).format(new Date())} · {report.value}</span>
             </section>
+            {report.summaryRows?.length ? <section className="report-paper-summary"><h3>Rata-rata setiap siswa</h3><ReportTable rows={report.summaryRows}/></section> : null}
+            <h3 className="report-detail-title">Data rinci</h3>
             <ReportTable rows={report.rows} />
             <footer><span>Bantu Beres Buku Kerja Digital</span><span>Jumlah data: {report.rows.length}</span></footer>
           </article>
@@ -5994,7 +6094,7 @@ function ReportPreview({ report, onClose }) {
           <button
             className="primary-button"
             onClick={() =>
-              saveRowsAsPdf(`${report.file}.pdf`, report.title, report.rows)
+              saveRowsAsPdf(`${report.file}.pdf`, report.title, report.rows, report.summaryRows || [], periodLabel)
             }
           >
             <Download size={16} /> Unduh PDF

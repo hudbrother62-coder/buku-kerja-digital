@@ -3700,6 +3700,34 @@ textarea:focus-visible {
   border-radius: 16px;
   background: var(--surface);
 }
+.report-period-panel {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(190px, auto);
+  align-items: end;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+.report-period-panel > div:first-child strong { display: block; margin-top: 4px; color: var(--ink); font-size: 16px; text-transform: capitalize; }
+.period-mode-tabs { display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; padding: 3px; border-radius: 11px; background: var(--surface-2); }
+.period-mode-tabs button { padding: 9px 14px; color: var(--muted); border: 0; border-radius: 8px; background: transparent; font: inherit; font-size: 10px; font-weight: 800; cursor: pointer; }
+.period-mode-tabs button.active { color: #fff; background: var(--gradient); box-shadow: 0 6px 16px rgba(101,47,173,.18); }
+.period-picker { display: grid; gap: 5px; }
+.period-picker span { color: var(--muted); font-size: 9px; font-weight: 800; }
+.period-picker input { min-height: 38px; padding: 8px 11px; color: var(--ink); border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font: inherit; font-size: 10px; }
+.report-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.report-summary-grid article { display: grid; gap: 4px; padding: 16px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); }
+.report-summary-grid span { color: var(--muted); font-size: 9px; font-weight: 750; }
+.report-summary-grid strong { color: var(--ink); font-size: 24px; }
+.report-summary-grid small { color: var(--muted); font-size: 9px; }
+.student-average-panel { overflow: hidden; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+.student-average-panel > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 16px; cursor: pointer; list-style: none; }
+.student-average-panel > summary::-webkit-details-marker { display: none; }
+.student-average-panel > summary strong { display: block; margin-top: 3px; color: var(--ink); font-size: 13px; }
+.student-average-panel > .report-table-wrap { max-height: 340px; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
 .report-detail-toolbar > div:first-child strong,
 .report-detail-toolbar > div:first-child span {
   display: block;
@@ -3794,6 +3822,9 @@ textarea:focus-visible {
 .report-paper-title p { margin: 0; color: #7e2bad; font-size: 9px; font-weight: 900; letter-spacing: .12em; }
 .report-paper-title h2 { margin: 5px 0 6px; color: #172238; font-size: 23px; }
 .report-paper-title span { color: #68758b; font-size: 10px; }
+.report-paper-summary h3,
+.report-detail-title { margin: 18px 0 8px; color: #172238; font-size: 13px; }
+.report-paper-summary .report-table-wrap { margin-bottom: 18px; }
 .report-paper .report-table-wrap { max-height: none; border-color: #d3dae5; border-radius: 8px; background: #fff; }
 .report-paper .report-table { min-width: 100%; color: #25334a; font-size: 9px; }
 .report-paper .report-table th { position: static; color: #172238; background: #eef2f8; }
@@ -3832,6 +3863,8 @@ textarea:focus-visible {
   .report-actions {
     justify-content: flex-start;
   }
+  .report-period-panel { grid-template-columns: 1fr 1fr; align-items: end; }
+  .report-period-panel > div:first-child { grid-column: 1 / -1; }
 }
 @media (max-width: 620px) {
   .dashboard-agenda-list {
@@ -3870,6 +3903,12 @@ textarea:focus-visible {
   .report-detail-toolbar {
     padding: 13px;
   }
+  .report-period-panel { grid-template-columns: 1fr; padding: 13px; }
+  .report-period-panel > div:first-child { grid-column: auto; }
+  .report-summary-grid { grid-template-columns: 1fr; }
+  .report-summary-grid article { grid-template-columns: 1fr auto; align-items: center; }
+  .report-summary-grid article small { grid-column: 1 / -1; }
+  .report-summary-grid strong { font-size: 20px; }
   .report-table-wrap {
     max-height: calc(100dvh - 330px);
   }
