@@ -1,4 +1,5 @@
 const API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models";
+const CURRENT_MODEL = "gemini-3.6-flash";
 const PRODUCTION_SUPABASE_URL = "https://glgpksdzregenrhfjasd.supabase.co";
 const PRODUCTION_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_Puv84iHF9e1WeVO9gupkNg_-7bm4VW7";
 
@@ -54,7 +55,14 @@ function compactContext(context = {}) {
 }
 
 async function generate(key, prompt, context) {
-  const model = process.env.GEMINI_PRIMARY_MODEL || "gemini-2.5-flash";
+  const configuredModel = String(process.env.GEMINI_PRIMARY_MODEL || "")
+    .trim()
+    .replace(/^models\//, "");
+  // Akun Gemini baru tidak lagi menerima gemini-2.5-flash. Tetap migrasikan
+  // nilai environment lama agar deployment tidak rusak setelah pergantian model.
+  const model = !configuredModel || configuredModel === "gemini-2.5-flash"
+    ? CURRENT_MODEL
+    : configuredModel;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 55000);
   try {
