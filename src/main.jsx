@@ -360,7 +360,7 @@ async function readWorkbook(file) {
 
 async function saveRowsAsCsv(filename, rows) {
   const XLSX = await import("xlsx");
-  const sheet = XLSX.utils.json_to_sheet(rows);
+  const sheet = XLSX.utils.json_to_sheet(reportExportRows(rows));
   const csv = XLSX.utils.sheet_to_csv(sheet);
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -385,20 +385,20 @@ function downloadBlob(filename, blob) {
 async function saveRowsAsExcel(filename, rows, sheetName = "Rekap") {
   const XLSX = await import("xlsx");
   const workbook = XLSX.utils.book_new();
-  const sheet = XLSX.utils.json_to_sheet(rows);
+  const sheet = XLSX.utils.json_to_sheet(reportExportRows(rows));
   XLSX.utils.book_append_sheet(workbook, sheet, sheetName.slice(0, 31));
   XLSX.writeFile(workbook, filename);
 }
 
 function saveRowsAsWord(filename, title, rows) {
-  const headers = Object.keys(rows[0] || { keterangan: "Belum ada data" });
+  const headers = reportHeaders(rows);
   const escapeHtml = (value) =>
     text(value)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
   const tableRows = rows.length ? rows : [{ keterangan: "Belum ada data" }];
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:Arial,sans-serif;margin:36px;color:#172238}h1{font-size:22px;margin-bottom:6px}p{color:#596579}table{width:100%;border-collapse:collapse;margin-top:22px;font-size:11px}th,td{border:1px solid #cfd6e2;padding:7px;text-align:left;vertical-align:top}th{background:#eef2f8;text-transform:capitalize}</style></head><body><h1>${escapeHtml(title)}</h1><p>Bantu Beres Buku Kerja Digital</p><table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header.replace(/_/g, " "))}</th>`).join("")}</tr></thead><tbody>${tableRows.map((row) => `<tr>${headers.map((header) => `<td>${escapeHtml(row[header])}</td>`).join("")}</tr>`).join("")}</tbody></table></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>@page{size:A4 landscape;margin:18mm}body{font-family:Arial,sans-serif;color:#172238}header{border-bottom:3px solid #7726aa;padding-bottom:12px}h1{font-size:22px;margin:0 0 6px}p{color:#596579;margin:0}table{width:100%;border-collapse:collapse;margin-top:22px;font-size:10px}th,td{border:1px solid #cfd6e2;padding:7px;text-align:left;vertical-align:top}th{background:#eef2f8;text-transform:capitalize}.footer{margin-top:22px;font-size:9px;color:#788397}</style></head><body><header><h1>${escapeHtml(title)}</h1><p>Bantu Beres Buku Kerja Digital · Dicetak ${escapeHtml(new Date().toLocaleDateString("id-ID"))}</p></header><table><thead><tr><th>No.</th>${headers.map((header) => `<th>${escapeHtml(header.replace(/_/g, " "))}</th>`).join("")}</tr></thead><tbody>${tableRows.map((row,index) => `<tr><td>${index+1}</td>${headers.map((header) => `<td>${escapeHtml(row[header])}</td>`).join("")}</tr>`).join("")}</tbody></table><p class="footer">Jumlah data: ${rows.length}</p></body></html>`;
   downloadBlob(
     filename,
     new Blob(["\ufeff", html], { type: "application/msword;charset=utf-8" }),
@@ -412,7 +412,7 @@ async function saveRowsAsPdf(filename, title, rows) {
     unit: "mm",
     format: "a4",
   });
-  const headers = Object.keys(rows[0] || { keterangan: "Belum ada data" });
+  const headers = reportHeaders(rows);
   documentPdf.setFont("helvetica", "bold");
   documentPdf.setFontSize(16);
   documentPdf.text(title, 14, 16);
@@ -439,6 +439,18 @@ async function saveRowsAsPdf(filename, title, rows) {
   if (!rows.length) renderLine(["Belum ada data"], false);
   else rows.forEach((row) => renderLine(headers.map((header) => row[header])));
   documentPdf.save(filename);
+}
+
+function reportHeaders(rows) {
+  return Object.keys(rows[0] || { keterangan: "Belum ada data" }).filter(
+    (header) => !header.startsWith("_"),
+  );
+}
+
+function reportExportRows(rows) {
+  return rows.map((row) =>
+    Object.fromEntries(reportHeaders([row]).map((header) => [header, row[header]])),
+  );
 }
 
 function Logo() {
@@ -1923,6 +1935,7 @@ function Workspace({ auth, onLogout }) {
     },
     deleteRecord: async (kind, row) => {
       const tableByKind = {
+        attendance: "attendance_records",
         student: "students",
         class: "classes",
         subject: "subjects",
@@ -1932,6 +1945,7 @@ function Workspace({ auth, onLogout }) {
         event: "teacher_events",
       };
       const collectionByKind = {
+        attendance: "attendance",
         student: "students",
         class: "classes",
         subject: "subjects",
@@ -2310,7 +2324,7 @@ function Workspace({ auth, onLogout }) {
         onImport={handlers.importSchedules}
       />
     ) : active === "reports" ? (
-      <ReportsPage data={data} setActive={setActive} />
+      <ReportsPage data={data} setActive={setActive} onDelete={handlers.deleteRecord} />
     ) : (
       <SettingsPage
         data={data}
@@ -2764,6 +2778,21 @@ function DashboardPage({ data, setActive, onPreferences }) {
   const rate = filteredAttendance.length
     ? Math.round((filteredPresent / filteredAttendance.length) * 100)
     : 0;
+  const attendanceComposition = [
+    { code: "H", label: "Hadir", tone: "green" },
+    { code: "S", label: "Sakit", tone: "amber" },
+    { code: "I", label: "Izin", tone: "blue" },
+    { code: "A", label: "Alpa", tone: "red" },
+  ].map((item) => {
+    const count = filteredAttendance.filter((row) => row.status === item.code).length;
+    return {
+      ...item,
+      count,
+      percentage: filteredAttendance.length
+        ? Math.round((count / filteredAttendance.length) * 100)
+        : 0,
+    };
+  });
   const classAverages = data.classes.map((classRow) => {
     const studentIds = new Set(
       data.students
@@ -2941,6 +2970,32 @@ function DashboardPage({ data, setActive, onPreferences }) {
           </div>
           <ClassAverageChart items={classAverages} />
         </div>
+        <div className="panel daily-composition-panel">
+          <div className="panel-head">
+            <div>
+              <p className="eyebrow">KOMPOSISI HARIAN</p>
+              <h3>Ringkasan kehadiran hari ini</h3>
+              <p>
+                {filteredAttendance.length
+                  ? `${filteredAttendance.length} catatan pada ${classId === "all" ? "semua kelas" : data.classes.find((item) => item.id === classId)?.name || "kelas terpilih"}.`
+                  : "Presensi hari ini belum diisi."}
+              </p>
+            </div>
+            <button className="text-button" onClick={() => setActive("attendance")}>Isi presensi</button>
+          </div>
+          <div className="daily-composition-table" role="table" aria-label="Komposisi kehadiran harian">
+            <div className="daily-composition-head" role="row">
+              <span>Status</span><span>Jumlah</span><span>Persentase</span>
+            </div>
+            {attendanceComposition.map((item) => (
+              <div className="daily-composition-row" role="row" key={item.code}>
+                <span><i className={item.tone}></i>{item.label}</span>
+                <strong>{item.count}</strong>
+                <span className="composition-progress"><i style={{ width: `${item.percentage}%` }}></i><b>{item.percentage}%</b></span>
+              </div>
+            ))}
+          </div>
+        </div>
         <div className="panel teaching-agenda-panel">
           <div className="panel-head">
             <div>
@@ -3077,16 +3132,36 @@ function ClassAverageChart({ items }) {
             : left + index * (innerWidth / (available.length - 1)),
         y: top + innerHeight - (item.average / 100) * innerHeight,
       }));
-      context.strokeStyle = "#8a2db4";
-      context.lineWidth = 3;
-      context.lineJoin = "round";
-      context.beginPath();
-      points.forEach((point, index) =>
-        index
-          ? context.lineTo(point.x, point.y)
-          : context.moveTo(point.x, point.y),
-      );
-      context.stroke();
+      if (points.length === 1) {
+        const point = points[0];
+        const barWidth = Math.min(64, Math.max(38, innerWidth * 0.12));
+        const barTop = point.y;
+        const barHeight = top + innerHeight - barTop;
+        const gradient = context.createLinearGradient(0, barTop, 0, top + innerHeight);
+        gradient.addColorStop(0, "#247fd5");
+        gradient.addColorStop(1, "#8a2db4");
+        context.fillStyle = gradient;
+        context.beginPath();
+        context.roundRect(point.x - barWidth / 2, barTop, barWidth, barHeight, 10);
+        context.fill();
+      } else {
+        const area = context.createLinearGradient(0, top, 0, top + innerHeight);
+        area.addColorStop(0, "rgba(138,45,180,.24)");
+        area.addColorStop(1, "rgba(36,127,213,0)");
+        context.beginPath();
+        context.moveTo(points[0].x, top + innerHeight);
+        points.forEach((point) => context.lineTo(point.x, point.y));
+        context.lineTo(points[points.length - 1].x, top + innerHeight);
+        context.closePath();
+        context.fillStyle = area;
+        context.fill();
+        context.strokeStyle = "#8a2db4";
+        context.lineWidth = 3;
+        context.lineJoin = "round";
+        context.beginPath();
+        points.forEach((point, index) => index ? context.lineTo(point.x, point.y) : context.moveTo(point.x, point.y));
+        context.stroke();
+      }
       points.forEach((point) => {
         context.fillStyle = "#247fd5";
         context.beginPath();
@@ -5594,10 +5669,13 @@ function AgendaPageV2({ data, onSave, onSaveEvent, onDelete, onImport }) {
   );
 }
 
-function ReportsPage({ data, setActive }) {
+function ReportsPage({ data, setActive, onDelete }) {
   const [selected, setSelected] = useState(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const attendanceRows = data.attendance.map((row) => ({
+    _sourceId: row.id,
     tanggal: row.attendance_date,
     kelas: data.classes.find((item) => item.id === row.class_id)?.name || "",
     siswa:
@@ -5609,6 +5687,7 @@ function ReportsPage({ data, setActive }) {
     catatan: row.note || "",
   }));
   const gradeRows = data.grades.map((row) => ({
+    _sourceId: row.id,
     tanggal: row.assessment_date || "",
     kelas: row.class_name || "",
     siswa: row.student_name || "",
@@ -5620,6 +5699,7 @@ function ReportsPage({ data, setActive }) {
     catatan: row.comment || "",
   }));
   const classRows = data.classes.map((row) => ({
+    _sourceId: row.id,
     kelas: row.name,
     tingkat: row.grade_level || "",
     jumlah_siswa: data.students.filter((student) => student.class_id === row.id)
@@ -5627,6 +5707,7 @@ function ReportsPage({ data, setActive }) {
     status: row.active === false ? "Tidak aktif" : "Aktif",
   }));
   const journalRows = data.journals.map((row) => ({
+    _sourceId: row.id,
     tanggal: row.journal_date,
     kelas: data.classes.find((item) => item.id === row.class_id)?.name || "",
     mata_pelajaran:
@@ -5647,6 +5728,7 @@ function ReportsPage({ data, setActive }) {
       file: "rekap-presensi",
       sheet: "Presensi",
       editPage: "attendance",
+      deleteKind: "attendance",
     },
     {
       id: "grades",
@@ -5658,6 +5740,7 @@ function ReportsPage({ data, setActive }) {
       file: "rekap-penilaian",
       sheet: "Penilaian",
       editPage: "grades",
+      deleteKind: "grade",
     },
     {
       id: "classes",
@@ -5669,6 +5752,7 @@ function ReportsPage({ data, setActive }) {
       file: "rekap-kelas",
       sheet: "Kelas",
       editPage: "master",
+      deleteKind: "class",
     },
     {
       id: "journals",
@@ -5680,6 +5764,7 @@ function ReportsPage({ data, setActive }) {
       file: "rekap-jurnal",
       sheet: "Jurnal",
       editPage: "journal",
+      deleteKind: "journal",
     },
   ];
   const report = reports.find((item) => item.id === selected);
@@ -5751,11 +5836,32 @@ function ReportsPage({ data, setActive }) {
             </button>
           </div>
         </div>
-        <ReportTable rows={report.rows} />
+        <ReportTable
+          rows={report.rows}
+          onDeleteRow={(row) => setDeleteTarget({ report, row })}
+        />
         {previewOpen && (
           <ReportPreview
             report={report}
             onClose={() => setPreviewOpen(false)}
+          />
+        )}
+        {deleteTarget && (
+          <ConfirmDelete
+            title={`Hapus satu data dari ${deleteTarget.report.title}?`}
+            description="Data yang dipilih akan dihapus dari database dan tidak ikut muncul pada preview maupun file unduhan berikutnya."
+            busy={deleting}
+            onCancel={() => setDeleteTarget(null)}
+            onConfirm={async () => {
+              if (deleting) return;
+              setDeleting(true);
+              try {
+                await onDelete(deleteTarget.report.deleteKind, { id: deleteTarget.row._sourceId, name: deleteTarget.row.kelas || deleteTarget.row.siswa || deleteTarget.row.topik || "data" });
+                setDeleteTarget(null);
+              } finally {
+                setDeleting(false);
+              }
+            }}
           />
         )}
       </PageSection>
@@ -5797,9 +5903,9 @@ function ReportCard({ icon: Icon, title, value, desc, onClick }) {
   );
 }
 
-function ReportTable({ rows, compact = false }) {
+function ReportTable({ rows, compact = false, onDeleteRow = null }) {
   const visibleRows = compact ? rows.slice(0, 12) : rows;
-  const headers = Object.keys(rows[0] || { keterangan: "Belum ada data" });
+  const headers = reportHeaders(rows);
   return (
     <div className="report-table-wrap">
       <table className="report-table">
@@ -5809,6 +5915,7 @@ function ReportTable({ rows, compact = false }) {
             {headers.map((header) => (
               <th key={header}>{header.replace(/_/g, " ")}</th>
             ))}
+            {onDeleteRow ? <th>Aksi</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -5819,11 +5926,12 @@ function ReportTable({ rows, compact = false }) {
                 {headers.map((header) => (
                   <td key={header}>{text(row[header]) || "-"}</td>
                 ))}
+                {onDeleteRow ? <td><button className="table-delete-button" onClick={() => onDeleteRow(row)}><Trash2 size={14}/> Hapus</button></td> : null}
               </tr>
             ))
           ) : (
             <tr>
-              <td colSpan={headers.length + 1}>Belum ada data tersimpan.</td>
+              <td colSpan={headers.length + (onDeleteRow ? 2 : 1)}>Belum ada data tersimpan.</td>
             </tr>
           )}
         </tbody>
@@ -5865,7 +5973,19 @@ function ReportPreview({ report, onClose }) {
           </button>
         </div>
         <div className="report-preview-body">
-          <ReportTable rows={report.rows} compact />
+          <article className="report-paper">
+            <header>
+              <div><span>BANTU BERES</span><strong>BUKU KERJA DIGITAL</strong></div>
+              <p>LAPORAN GURU</p>
+            </header>
+            <section className="report-paper-title">
+              <p>REKAP DATA</p>
+              <h2>{report.title}</h2>
+              <span>Dicetak {new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "long", year: "numeric" }).format(new Date())} · {report.value}</span>
+            </section>
+            <ReportTable rows={report.rows} />
+            <footer><span>Bantu Beres Buku Kerja Digital</span><span>Jumlah data: {report.rows.length}</span></footer>
+          </article>
         </div>
         <div className="master-modal-actions">
           <button className="secondary-button" onClick={onClose}>
