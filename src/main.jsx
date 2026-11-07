@@ -1,3 +1,4 @@
+import PasswordRecovery from './password-recovery'
 import React, {
   useDeferredValue,
   useEffect,
@@ -857,6 +858,7 @@ function AuthScreen({ onAuth, configurationPending = false }) {
               <ArrowRight size={17} />
             </button>
           </form>
+          {mode === "login" && <p style={{textAlign:"center",margin:"12px 0"}}><a href="/?bbreset=request">Lupa password?</a></p>}
           <p className="auth-footnote">
             Dengan melanjutkan, kamu tetap menjadi pemeriksa akhir untuk semua
             catatan, nilai, dan rekomendasi AI.
@@ -6442,6 +6444,6 @@ const reactRoot = rootElement.__bantuBeresRoot || createRoot(rootElement);
 rootElement.__bantuBeresRoot = reactRoot;
 reactRoot.render(
   <AppErrorBoundary>
-    <App />
+    {new URLSearchParams(window.location.search).has('bbreset') ? <PasswordRecovery client={supabase} /> : <App />}
   </AppErrorBoundary>,
 );
