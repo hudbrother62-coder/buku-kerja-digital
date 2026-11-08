@@ -6270,15 +6270,7 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
                 </small>
               </span>
             </div>
-            <p className="saved-label">Pembaruan AI: GroqCloud aktif. Key Gemini lama tidak digunakan lagi; buat key Groq baru dengan awalan gsk_. Model dipilih otomatis sesuai akun Anda.</p><div className="video-frame">
-              <iframe
-                src="https://www.youtube.com/embed?listType=search&list=GroqCloud%20API%20Key"
-                title="Tutorial memasukkan API key Groq"
-                loading="lazy"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-              ></iframe>
-            </div>
+            <p className="saved-label">Pembaruan AI: GroqCloud aktif. Key Gemini lama tidak digunakan lagi; buat key Groq baru dengan awalan gsk_. Model dipilih otomatis sesuai akun Anda.</p><a className="studio-link" href="https://console.groq.com/docs/models" target="_blank" rel="noreferrer">Panduan resmi model GroqCloud (dipilih otomatis)</a>
           </details>
         </div>
         <div className="settings-card">
