@@ -55,6 +55,7 @@ const SESSION_KEY = "bb_buku_kerja_session";
 const ACCOUNTS_KEY = "bb_buku_kerja_accounts";
 const DATA_KEY = "bb_buku_kerja_data";
 const API_KEY = "bb_buku_kerja_groq_key";
+const GROQ_NOTICE_KEY = "bb_bkd_groq_update_20261108";
 const DAY_NAMES = [
   "Senin",
   "Selasa",
@@ -1258,6 +1259,7 @@ function Workspace({ auth, onLogout }) {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [notice, setNotice] = useState(null);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [groqNotice, setGroqNotice] = useState(() => window.localStorage.getItem(GROQ_NOTICE_KEY) !== "seen");
 
   const refresh = async (blocking = false) => {
     if (blocking) setLoading(true);
@@ -2494,6 +2496,11 @@ function Workspace({ auth, onLogout }) {
           </div>
         </header>
         <div className="content">
+          {groqNotice && <div className="form-notice page-notice" role="status">
+            <strong>Update AI: kini menggunakan GroqCloud.</strong> Key Gemini lama tidak berlaku. Buat API key Groq (gsk_...) di Pengaturan. Model AI dipilih otomatis.{" "}
+            <button type="button" onClick={() => setActive("settings")}>Buka Pengaturan</button>{" "}
+            <button type="button" onClick={() => { setGroqNotice(false); window.localStorage.setItem(GROQ_NOTICE_KEY, "seen"); }}>Mengerti</button>
+          </div>}
           {error && (
             <div className="form-notice error page-notice">{error}</div>
           )}
@@ -6113,6 +6120,8 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
     () => window.localStorage.getItem(API_KEY) || "",
   );
   const [saved, setSaved] = useState(false);
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyError, setKeyError] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [aiStatus, setAiStatus] = useState("checking");
   useEffect(() => {
@@ -6133,11 +6142,36 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
       active = false;
     };
   }, []);
-  const save = () => {
+  const save = async () => {
     const cleaned = key.trim();
-    if (cleaned && !cleaned.startsWith("gsk_")) { window.alert("Masukkan API key GroqCloud yang diawali gsk_."); return; }
-    if (cleaned) window.localStorage.setItem(API_KEY, cleaned);
-    else window.localStorage.removeItem(API_KEY);
+    setKeyError("");
+    if (cleaned && !/^gsk_[A-Za-z0-9_-]{20,}$/.test(cleaned)) {
+      setKeyError("Gunakan API key GroqCloud diawali gsk_. API key Gemini lama tidak kompatibel.");
+      return;
+    }
+    if (cleaned) {
+      setKeyBusy(true);
+      try {
+        const session = supabase ? await supabase.auth.getSession() : null;
+        const token = session?.data?.session?.access_token || "";
+        const response = await fetch("/api/ai", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) },
+          body: JSON.stringify({ userKey: cleaned }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "API key belum dapat diuji.");
+        window.localStorage.setItem(API_KEY, cleaned);
+        setAiStatus("personal");
+      } catch (error) {
+        setKeyError(error.message || "Gagal menguji koneksi GroqCloud.");
+        setKeyBusy(false);
+        return;
+      }
+      setKeyBusy(false);
+    } else {
+      window.localStorage.removeItem(API_KEY);
+    }
     setSaved(true);
     window.setTimeout(() => setSaved(false), 2500);
   };
@@ -6174,7 +6208,7 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
           <div className="settings-copy">
             <p className="eyebrow">ASISTEN AI</p>
             <div className="ai-settings-title">
-              <h3>Asisten Guru Groq</h3>
+              <h3>Asisten Guru GroqCloud</h3>
               <span className={`ai-status ${aiStatus}`}>
                 {aiStatus === "checking"
                   ? "Memeriksa…"
@@ -6187,8 +6221,8 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
             </div>
             <p>
               {aiStatus === "ready"
-                ? "API key Groq aplikasi sudah terhubung di server dan dipakai bergantian saat salah satu mencapai batas kuota. Kolom di bawah hanya diperlukan jika guru ingin memakai key pribadi."
-                : "Masukkan API key pribadi agar Asisten Guru dapat digunakan. Key hanya tersimpan di perangkat guru ini. Jangan gunakan key Gemini lama."}
+                ? "Key Groq aplikasi dipakai bergantian. Guru dapat menambahkan key pribadi sebagai cadangan. Model Groq dipilih otomatis sesuai daftar model yang tersedia."
+                : "Masukkan API key GroqCloud pribadi agar Asisten Guru dapat digunakan. Model otomatis dipilih sesuai key. Key pribadi tersimpan di browser perangkat ini."}
             </p>
             <a
               className="studio-link"
@@ -6197,7 +6231,7 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
               rel="noreferrer"
             >
               <Sparkles size={16} />
-              Buka GroqCloud untuk membuat API key
+              Buka GroqCloud Console untuk membuat API key
               <ArrowRight size={14} />
             </a>
           </div>
@@ -6207,7 +6241,7 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
                 type={showKey ? "text" : "password"}
                 value={key}
                 onChange={(event) => setKey(event.target.value)}
-                placeholder="Tempel API key Groq"
+                placeholder="Tempel API key GroqCloud (gsk_...)"
               />
               <button
                 className="icon-button"
@@ -6220,37 +6254,38 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
                 {showKey ? <EyeOff size={17} /> : <Eye size={17} />}
               </button>
             </div>
-            <button className="primary-button" onClick={save}>
-              <Save size={15} /> Simpan
+            <button className="primary-button" onClick={save} disabled={keyBusy}>
+              <Save size={15} /> {keyBusy ? "Memeriksa…" : "Uji Koneksi & Simpan"}
             </button>
           </div>
+          {keyError && <small className="form-notice error" role="alert">{keyError}</small>}
           {saved && (
             <small className="saved-label">
-              API key siap digunakan dari perangkat ini.
+              API key GroqCloud teruji dan siap digunakan. Model dipilih otomatis.
             </small>
           )}
           <details className="tutorial-details" open>
-            <summary>Tutorial memasukkan API key Groq</summary>
+            <summary>Tutorial memasukkan API key GroqCloud</summary>
             <div className="api-steps">
               <span>
                 <b>1</b>
                 <strong>Buka GroqCloud Console</strong>
                 <small>
-                  Tekan tautan GroqCloud di atas lalu daftar atau masuk.
+                  Buka tautan di atas, lalu login atau daftar akun GroqCloud.
                 </small>
               </span>
               <span>
                 <b>2</b>
                 <strong>Buat API key</strong>
                 <small>
-                  Pilih Create API Key, lalu salin key yang dibuat.
+                  Pilih API Keys kemudian Create API Key dan beri nama key.
                 </small>
               </span>
               <span>
                 <b>3</b>
                 <strong>Salin key</strong>
                 <small>
-                  Tekan Copy. Jangan mengirim atau memperlihatkan key kepada
+                  Salin key yang diawali gsk_. Jangan mengirim atau memperlihatkan key kepada
                   orang lain.
                 </small>
               </span>
@@ -6258,7 +6293,7 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
                 <b>4</b>
                 <strong>Tempel dan simpan</strong>
                 <small>
-                  Tempel key di kolom API key pribadi lalu tekan Simpan.
+                  Tempel key di kolom pribadi lalu tekan Uji Koneksi & Simpan. Model dipilih otomatis.
                 </small>
               </span>
               <span>
@@ -6270,7 +6305,9 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
                 </small>
               </span>
             </div>
-            <p className="saved-label">Pembaruan AI: GroqCloud aktif. Key Gemini lama tidak digunakan lagi; buat key Groq baru dengan awalan gsk_. Model dipilih otomatis sesuai akun Anda.</p><a className="studio-link" href="https://console.groq.com/docs/models" target="_blank" rel="noreferrer">Panduan resmi model GroqCloud (dipilih otomatis)</a>
+            <div className="video-frame">
+              <div className="api-steps"><p>Video lama membahas Gemini sehingga tidak berlaku untuk GroqCloud. Ikuti langkah tertulis di atas atau baca <a href="https://console.groq.com/docs/quickstart" target="_blank" rel="noreferrer">panduan resmi GroqCloud</a>.</p></div>
+            </div>
           </details>
         </div>
         <div className="settings-card">
