@@ -54,7 +54,7 @@ const TEMPLATE_URL = "/templates/Bantu_Beres_Template_Import.xlsx";
 const SESSION_KEY = "bb_buku_kerja_session";
 const ACCOUNTS_KEY = "bb_buku_kerja_accounts";
 const DATA_KEY = "bb_buku_kerja_data";
-const API_KEY = "bb_buku_kerja_gemini_key";
+const API_KEY = "bb_buku_kerja_groq_key";
 const DAY_NAMES = [
   "Senin",
   "Selasa",
@@ -6135,6 +6135,7 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
   }, []);
   const save = () => {
     const cleaned = key.trim();
+    if (cleaned && !cleaned.startsWith("gsk_")) { window.alert("Masukkan API key GroqCloud yang diawali gsk_."); return; }
     if (cleaned) window.localStorage.setItem(API_KEY, cleaned);
     else window.localStorage.removeItem(API_KEY);
     setSaved(true);
@@ -6173,7 +6174,7 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
           <div className="settings-copy">
             <p className="eyebrow">ASISTEN AI</p>
             <div className="ai-settings-title">
-              <h3>Asisten Guru Gemini</h3>
+              <h3>Asisten Guru Groq</h3>
               <span className={`ai-status ${aiStatus}`}>
                 {aiStatus === "checking"
                   ? "Memeriksa…"
@@ -6186,17 +6187,17 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
             </div>
             <p>
               {aiStatus === "ready"
-                ? "Tiga API key aplikasi sudah terhubung di server dan dipakai bergantian saat salah satu mencapai batas kuota. Kolom di bawah hanya diperlukan jika guru ingin memakai key pribadi."
-                : "Masukkan API key pribadi agar Asisten Guru dapat digunakan. Key hanya tersimpan di perangkat guru ini."}
+                ? "API key Groq aplikasi sudah terhubung di server dan dipakai bergantian saat salah satu mencapai batas kuota. Kolom di bawah hanya diperlukan jika guru ingin memakai key pribadi."
+                : "Masukkan API key pribadi agar Asisten Guru dapat digunakan. Key hanya tersimpan di perangkat guru ini. Jangan gunakan key Gemini lama."}
             </p>
             <a
               className="studio-link"
-              href="https://aistudio.google.com/app/apikey"
+              href="https://console.groq.com/keys"
               target="_blank"
               rel="noreferrer"
             >
               <Sparkles size={16} />
-              Buka Google AI Studio untuk membuat API key
+              Buka GroqCloud untuk membuat API key
               <ArrowRight size={14} />
             </a>
           </div>
@@ -6206,7 +6207,7 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
                 type={showKey ? "text" : "password"}
                 value={key}
                 onChange={(event) => setKey(event.target.value)}
-                placeholder="Tempel API key Gemini"
+                placeholder="Tempel API key Groq"
               />
               <button
                 className="icon-button"
@@ -6229,20 +6230,20 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
             </small>
           )}
           <details className="tutorial-details" open>
-            <summary>Tutorial memasukkan API key Gemini</summary>
+            <summary>Tutorial memasukkan API key Groq</summary>
             <div className="api-steps">
               <span>
                 <b>1</b>
-                <strong>Buka Google AI Studio</strong>
+                <strong>Buka GroqCloud Console</strong>
                 <small>
-                  Tekan tombol ungu di atas dan masuk dengan akun Google.
+                  Tekan tautan GroqCloud di atas lalu daftar atau masuk.
                 </small>
               </span>
               <span>
                 <b>2</b>
                 <strong>Buat API key</strong>
                 <small>
-                  Pilih Create API key, lalu pilih project Google yang tersedia.
+                  Pilih Create API Key, lalu salin key yang dibuat.
                 </small>
               </span>
               <span>
@@ -6269,10 +6270,10 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
                 </small>
               </span>
             </div>
-            <div className="video-frame">
+            <p className="saved-label">Pembaruan AI: GroqCloud aktif. Key Gemini lama tidak digunakan lagi; buat key Groq baru dengan awalan gsk_. Model dipilih otomatis sesuai akun Anda.</p><div className="video-frame">
               <iframe
-                src="https://www.youtube.com/embed/mUTAq9ffk0s"
-                title="Tutorial memasukkan API key Gemini"
+                src="https://www.youtube.com/embed?listType=search&list=GroqCloud%20API%20Key"
+                title="Tutorial memasukkan API key Groq"
                 loading="lazy"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                 allowFullScreen
