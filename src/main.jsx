@@ -55,7 +55,7 @@ const SESSION_KEY = "bb_buku_kerja_session";
 const ACCOUNTS_KEY = "bb_buku_kerja_accounts";
 const DATA_KEY = "bb_buku_kerja_data";
 const API_KEY = "bb_buku_kerja_groq_key";
-const GROQ_NOTICE_KEY = "bb_bkd_groq_update_20261108";
+const GROQ_NOTICE_KEY = "bb_bkd_groq_update_20261109_video";
 const DAY_NAMES = [
   "Senin",
   "Selasa",
@@ -2497,7 +2497,7 @@ function Workspace({ auth, onLogout }) {
         </header>
         <div className="content">
           {groqNotice && <div className="form-notice page-notice" role="status">
-            <strong>Update AI: kini menggunakan GroqCloud.</strong> Key Gemini lama tidak berlaku. Buat API key Groq (gsk_...) di Pengaturan. Model AI dipilih otomatis.{" "}
+            <strong>Update AI: kini menggunakan GroqCloud.</strong> Key Gemini lama tidak berlaku. Buat API key GroqCloud (gsk_...) di Pengaturan. Model dipilih otomatis. Kini tersedia video tutorial terbaru di Pengaturan.{" "}
             <button type="button" onClick={() => setActive("settings")}>Buka Pengaturan</button>{" "}
             <button type="button" onClick={() => { setGroqNotice(false); window.localStorage.setItem(GROQ_NOTICE_KEY, "seen"); }}>Mengerti</button>
           </div>}
