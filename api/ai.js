@@ -1,5 +1,5 @@
 const ROOT = "https://api.groq.com/openai/v1";
-const TEXT_MODELS = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "llama-3.1-8b-instant"];
+const TEXT_MODELS = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.1-8b-instant", "qwen/qwen3.8-27b", "qwen/qwen3.6-27b"];
 const URL = "https://glgpksdzregenrhfjasd.supabase.co";
 const PUBLISHABLE = "sb_publishable_Puv84iHF9e1WeVO9gupkNg_-7bm4VW7";
 const modelCache = new Map();
@@ -32,17 +32,33 @@ async function availableModels(key) {
   return models;
 }
 function cleanOutput(value) {
-  return String(value||"").replace(/\*\*(.*?)\*\*/g,"$1").replace(/__(.*?)__/g,"$1").replace(/^#{1,6}\s+/gm,"").replace(/\n{3,}/g,"\n\n").trim();
+  return String(value || "")
+    .replace(/^```(?:\w+)?\s*/i, "").replace(/\s*```$/i, "")
+    .replace(/\*\*(.*?)\*\*/g, "$1").replace(/__(.*?)__/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "").replace(/^\s*[-*]\s+/gm, "• ")
+    .replace(/\n{3,}/g, "\n\n").trim();
 }
-function contextSummary(context={}) {
-  const students = (context.students||[]).slice(0,500);
-  const grades = (context.grades||[]).slice(0,500);
-  return {profile:context.profile||{},classes:context.classes||[],subjects:context.subjects||[],students,
-    attendance:(context.attendance||[]).slice(0,1000),
-    journals:(context.journals||[]).slice(0,32),
-    grades,
-    schedules:(context.schedules||[]).slice(0,100)};
+
+
+function compactContext(context = {}) {
+  const statusCount = (context.attendance || []).reduce((acc, row) => ({ ...acc, [row.status]: (acc[row.status] || 0) + 1 }), {});
+  const gradeValues = (context.grades || []).map((row) => Number(row.point)).filter(Number.isFinite);
+  const average = gradeValues.length ? Math.round(gradeValues.reduce((sum, value) => sum + value, 0) / gradeValues.length) : null;
+  const studentMap = Object.fromEntries((context.students || []).map((student) => [student.id, student]));
+  const attention = (context.grades || []).filter((row) => Number(row.point) < Number(row.max_point || 100) * 0.75 || String(row.comment || "").trim()).slice(0, 40).map((row) => ({ student: row.student_name || studentMap[row.student_id]?.name || "", class: row.class_name || "", subject: row.subject_name || "", task: row.assessment_title || "", point: row.point, max: row.max_point, note: row.comment || "" }));
+  return {
+    teacher: context.profile?.fullName || "Guru",
+    role: context.profile?.role || "guru",
+    school: context.profile?.schoolName || "",
+    classes: context.classes || [], subjects: context.subjects || [], students: (context.students || []).slice(0, 500),
+    attendanceSummary: statusCount,
+    recentJournals: (context.journals || []).slice(0, 32).map(({ journal_date, topic, activity, reflection, follow_up }) => ({ journal_date, topic, activity, reflection, follow_up })),
+    gradeSummary: { count: gradeValues.length, average, attention },
+    weeklySchedules: (context.schedules || []).slice(0, 100),
+  };
 }
+
+
 async function generate(key,prompt,context) {
   const models=await availableModels(key);
   let lastError;
@@ -54,7 +70,7 @@ async function generate(key,prompt,context) {
         body:JSON.stringify({model,temperature:0.25,top_p:0.9,max_completion_tokens:4096,
           messages:[
             {role:"system",content:"Anda Asisten Guru Bantu Beres. Bantu administrasi, jurnal, presensi, nilai, refleksi dan tindak lanjut sekolah secara akurat dalam bahasa Indonesia. Gunakan hanya data yang diberikan, jangan mengarang informasi siswa. Guru menjadi pemeriksa akhir. Hindari markdown dekoratif."},
-            {role:"user",content:"Data ruang kerja:\n"+JSON.stringify(contextSummary(context))+"\n\nPertanyaan guru:\n"+String(prompt).slice(0,8000)}
+            {role:"user",content:"Data ruang kerja:\n"+JSON.stringify(compactContext(context)).slice(0,65000)+"\n\nPertanyaan guru:\n"+String(prompt).slice(0,8000)}
           ]})
       });
       const data=await res.json().catch(()=>({}));
