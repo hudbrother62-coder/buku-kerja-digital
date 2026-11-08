@@ -6146,7 +6146,7 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
     const cleaned = key.trim();
     setKeyError("");
     if (cleaned && !/^gsk_[A-Za-z0-9_-]{20,}$/.test(cleaned)) {
-      setKeyError("Gunakan API key GroqCloud diawali gsk_. API key GroqCloud lama tidak kompatibel.");
+      setKeyError("Gunakan API key GroqCloud diawali gsk_. API key Gemini lama tidak kompatibel.");
       return;
     }
     if (cleaned) {
