@@ -1,5 +1,5 @@
 const ROOT = "https://api.groq.com/openai/v1";
-const TEXT_MODELS = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.1-8b-instant", "qwen/qwen3.8-27b", "qwen/qwen3.6-27b"];
+const TEXT_MODELS = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b", "meta-models/muse-spark-open", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
 const URL = "https://glgpksdzregenrhfjasd.supabase.co";
 const PUBLISHABLE = "sb_publishable_Puv84iHF9e1WeVO9gupkNg_-7bm4VW7";
 const modelCache = new Map();
