@@ -75,3 +75,12 @@ test("tutorial uses GroqCloud and does not embed obsolete Gemini video",()=>{
   assert.match(src,/Update AI: kini menggunakan GroqCloud/);
   assert.doesNotMatch(src,/mUTAq9ffk0s/);
 });
+
+
+test("Buku Kerja Digital embeds the verified GroqCloud tutorial video", () => {
+  const src=readFileSync(new URL("../src/main.jsx",import.meta.url),"utf8");
+  assert.match(src,/youtube\.com\/embed\/WBX9Yvk4eKs/);
+  assert.match(src,/youtu\.be\/WBX9Yvk4eKs/);
+  assert.match(src,/allowFullScreen/);
+  assert.match(src,/Model dipilih otomatis/);
+});
