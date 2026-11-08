@@ -1,5 +1,3 @@
-const API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models";
-const CURRENT_MODEL = "gemini-3.6-flash";
 const PRODUCTION_SUPABASE_URL = "https://glgpksdzregenrhfjasd.supabase.co";
 const PRODUCTION_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_Puv84iHF9e1WeVO9gupkNg_-7bm4VW7";
 
@@ -10,9 +8,9 @@ function cleanKey(value) {
 
 function configuredKeys() {
   const aliases = [
-    ["GEMINI_AUTH_KEY_1", "GEMINI_KEY_1", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
-    ["GEMINI_AUTH_KEY_2", "GEMINI_KEY_2"],
-    ["GEMINI_AUTH_KEY_3", "GEMINI_KEY_3"],
+    ["GROQ_API_KEY_1", "GROQ_KEY_1", "GROQ_API_KEY", "GROQ_API_KEY"],
+    ["GROQ_API_KEY_2", "GROQ_KEY_2"],
+    ["GROQ_API_KEY_3", "GROQ_KEY_3"],
   ];
   return [...new Set(aliases.map((group) => group.map((name) => cleanKey(process.env[name])).find(Boolean)).filter(Boolean))];
 }
@@ -54,33 +52,49 @@ function compactContext(context = {}) {
   };
 }
 
+const GROQ_ROOT = "https://api.groq.com/openai/v1";
+const GROQ_PREFERRED = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"];
+async function availableModels(key) {
+  const res = await fetch(GROQ_ROOT + "/models", { headers: { Authorization: "Bearer " + key }, signal: AbortSignal.timeout(12000) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error?.message || "API key Groq ditolak."), { status: res.status });
+  const ids = (data.data || []).filter(m => m.active !== false && !/guard|whisper|tts|speech|transcri|audio|embed|vision|image/i.test(m.id)).map(m => m.id);
+  return [...GROQ_PREFERRED.filter(id => ids.includes(id)), ...ids.filter(id => !GROQ_PREFERRED.includes(id))];
+}
 async function generate(key, prompt, context) {
-  const configuredModel = String(process.env.GEMINI_PRIMARY_MODEL || "")
-    .trim()
-    .replace(/^models\//, "");
-  // Akun Gemini baru tidak lagi menerima gemini-2.5-flash. Tetap migrasikan
-  // nilai environment lama agar deployment tidak rusak setelah pergantian model.
-  const model = !configuredModel || configuredModel === "gemini-2.5-flash"
-    ? CURRENT_MODEL
-    : configuredModel;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 55000);
-  try {
-    const response = await fetch(`${API_ROOT}/${encodeURIComponent(model)}:generateContent`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: "Anda adalah Asisten Guru Bantu Beres untuk pendidik profesional. Sapa atau panggil guru dengan nama depannya secara natural, tidak di setiap paragraf. Pahami perbedaan wali kelas, guru mata pelajaran, dan peran gabungan. Bantu menyusun administrasi, menganalisis presensi dan hasil belajar, menulis refleksi pedagogis, merancang tindak lanjut, remedial, pengayaan, komunikasi orang tua, serta agenda kerja. Utamakan analisis yang tajam, langkah yang dapat dilaksanakan, dan bahasa Indonesia yang setara dengan kompetensi guru. Gunakan data konteks bila tersedia, tetapi jangan pernah mengarang nama, nilai, kondisi, atau fakta siswa. Jika data kurang, jelaskan informasi yang dibutuhkan atau nyatakan asumsi secara singkat. Jangan gunakan markdown dekoratif, tanda bintang, pagar judul, atau code fence. Gunakan paragraf pendek dan penomoran polos hanya bila membantu. Guru selalu menjadi pemeriksa dan pengambil keputusan akhir." }] },
-        contents: [{ role: "user", parts: [{ text: `Konteks ruang kerja:\n${JSON.stringify(compactContext(context))}\n\nPerintah guru:\n${String(prompt).slice(0, 8000)}` }] }],
-        generationConfig: { temperature: 0.25, topP: 0.9, maxOutputTokens: 8192 },
-      }), signal: controller.signal,
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(payload?.error?.message || "Gemini belum dapat merespons."), { status: response.status });
-    const reply = cleanOutput(payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n"));
-    if (!reply) throw Object.assign(new Error("AI tidak menghasilkan jawaban."), { status: 502 });
-    return reply;
-  } finally { clearTimeout(timer); }
+  const models = await availableModels(key);
+  if (!models.length) throw Object.assign(new Error("Tidak ada model chat Groq yang diizinkan untuk API key ini."), { status: 403 });
+  let lastError;
+  for (const model of models) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 55000);
+      let res;
+      try {
+        res = await fetch(GROQ_ROOT + "/chat/completions", {
+          method: "POST", signal: controller.signal,
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + key },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: "Anda adalah Asisten Guru Bantu Beres untuk pendidik profesional. Sapa guru dengan natural, bedakan wali kelas dan guru mapel, bantu administrasi, presensi, penilaian, refleksi, remedial dan komunikasi orang tua. Jangan mengarang data siswa. Gunakan bahasa Indonesia jelas, tanpa markdown dekoratif. Guru memeriksa hasil akhir." },
+              { role: "user", content: "Konteks ruang kerja:\\n" + JSON.stringify(compactContext(context)).slice(0,65000) + "\\n\\nPerintah guru:\\n" + String(prompt).slice(0,8000) },
+            ], temperature: 0.25, max_completion_tokens: 4096
+          })
+        });
+      } finally { clearTimeout(timer); }
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw Object.assign(new Error(payload.error?.message || "Model Groq belum merespons."), { status: res.status });
+      const reply = cleanOutput(payload.choices?.[0]?.message?.content);
+      if (!reply) throw Object.assign(new Error("Model Groq tidak menghasilkan teks."), { status: 502 });
+      return { reply, model };
+    } catch (error) {
+      lastError = error;
+      if (![400, 403, 404, 408, 429, 500, 502, 503, 504].includes(Number(error.status))) throw error;
+      if (error.status === 429) break; // quota belongs to the current key, try another key
+    }
+  }
+  throw lastError || new Error("Model Groq tidak tersedia.");
 }
 
 export default async function handler(request, response) {
@@ -89,12 +103,12 @@ export default async function handler(request, response) {
     await verifyUser(request);
     const { prompt, context, userKey } = request.body || {};
     if (!String(prompt || "").trim()) return response.status(400).json({ error: "Tulis perintah untuk Asisten Guru." });
-    const keys = [...configuredKeys(), cleanKey(userKey)].filter(Boolean);
-    if (!keys.length) return response.status(503).json({ error: "API key Gemini belum tersedia. Masukkan key pribadi di Pengaturan." });
+    const keys = [...new Set([...configuredKeys(), cleanKey(userKey).startsWith("gsk_") ? cleanKey(userKey) : ""])].filter(Boolean);
+    if (!keys.length) return response.status(503).json({ error: "API key Groq belum tersedia. Masukkan key pribadi di Pengaturan." });
     let lastError;
     for (const key of keys) {
-      try { return response.status(200).json({ reply: await generate(key, prompt, context) }); }
-      catch (error) { lastError = error; if (![401, 403, 429, 500, 502, 503, 504].includes(Number(error.status))) break; }
+      try { return response.status(200).json(await generate(key, prompt, context)); }
+      catch (error) { lastError = error; if (![400, 401, 403, 404, 408, 429, 500, 502, 503, 504].includes(Number(error.status))) break; }
     }
     throw lastError || new Error("Asisten Guru belum dapat merespons.");
   } catch (error) {
