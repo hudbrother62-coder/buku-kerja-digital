@@ -6306,8 +6306,19 @@ function SettingsPage({ data, onLogout, onRoleChange }) {
               </span>
             </div>
             <div className="video-frame">
-              <div className="api-steps"><p>Video lama membahas Gemini sehingga tidak berlaku untuk GroqCloud. Ikuti langkah tertulis di atas atau baca <a href="https://console.groq.com/docs/quickstart" target="_blank" rel="noreferrer">panduan resmi GroqCloud</a>.</p></div>
+              <iframe
+                src="https://www.youtube.com/embed/WBX9Yvk4eKs"
+                title="Video tutorial: membuat API key GroqCloud dan menghubungkannya ke Buku Kerja Digital"
+                loading="lazy"
+                referrerPolicy="strict-origin-when-cross-origin"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+              />
             </div>
+            <p className="field-hint">
+              <a href="https://youtu.be/WBX9Yvk4eKs" target="_blank" rel="noopener noreferrer">Tonton tutorial di YouTube</a>.
+              Key GroqCloud diawali gsk_. Masa berlaku key berbeda dari kuota pemakaian; penggunaan tetap mengikuti batas akun GroqCloud.
+            </p>
           </details>
         </div>
         <div className="settings-card">
