@@ -4570,6 +4570,21 @@ function JournalPage({ data, onAdd, onDelete }) {
     follow_up: "",
   });
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [pdfBusy, setPdfBusy] = useState(null);
+  const [pdfError, setPdfError] = useState("");
+  const exportPdf = async (journals, key) => {
+    if (pdfBusy || !journals.length) return;
+    setPdfBusy(key);
+    setPdfError("");
+    try {
+      const { downloadJournalPdf } = await import("./lib/journal-pdf");
+      await downloadJournalPdf(data, journals);
+    } catch (error) {
+      setPdfError(error?.message || "Gagal mengunduh jurnal PDF. Silakan coba lagi.");
+    } finally {
+      setPdfBusy(null);
+    }
+  };
   const update = (key, value) =>
     setForm((current) => ({ ...current, [key]: value }));
   const submit = async (event) => {
@@ -4677,10 +4692,22 @@ function JournalPage({ data, onAdd, onDelete }) {
           <Save size={16} /> Simpan jurnal
         </button>
       </form>
-      <div className="list-heading">
+      <div className="list-heading journal-history-heading">
         <p className="eyebrow">RIWAYAT JURNAL</p>
-        <span>{data.journals.length} catatan tersimpan</span>
+        <div className="journal-history-actions">
+          <span>{data.journals.length} catatan tersimpan</span>
+          <button
+            type="button"
+            className="secondary-button journal-pdf-button"
+            disabled={!data.journals.length || pdfBusy !== null}
+            onClick={() => void exportPdf(data.journals, "all")}
+          >
+            {pdfBusy === "all" ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
+            {pdfBusy === "all" ? "Menyiapkan PDF..." : "Unduh semua PDF"}
+          </button>
+        </div>
       </div>
+      {pdfError ? <p className="journal-export-error" role="alert">{pdfError}</p> : null}
       <div className="journal-list">
         {data.journals.length === 0 ? (
           <EmptyState
@@ -4720,6 +4747,17 @@ function JournalPage({ data, onAdd, onDelete }) {
                   <span>Tindak lanjut</span>
                   <p>{journal.follow_up || "Belum ada tindak lanjut."}</p>
                 </div>
+              </div>
+              <div className="journal-download-actions">
+                <button
+                  type="button"
+                  className="secondary-button journal-pdf-button"
+                  disabled={pdfBusy !== null}
+                  onClick={() => void exportPdf([journal], journal.id)}
+                >
+                  {pdfBusy === journal.id ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
+                  {pdfBusy === journal.id ? "Menyiapkan PDF..." : "Download PDF jurnal ini"}
+                </button>
               </div>
             </details>
           ))
